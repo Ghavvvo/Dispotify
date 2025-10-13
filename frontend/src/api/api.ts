@@ -1,4 +1,5 @@
-const apiUrl = "http://127.0.0.1:8000/api/v1/"
+// Obtener la URL del backend desde variables de entorno o usar valor por defecto
+const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api/v1/"
 
 const get = (endpoint: string) => 
     fetch(apiUrl + endpoint).then(res => res.json())
