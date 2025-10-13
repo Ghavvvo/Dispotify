@@ -1,63 +1,75 @@
 version: '3.8'
 
 services:
-
   db:
-    image: postgres:15-alpine
+    image: postgres:15
     environment:
-      POSTGRES_USER: dispotify_user
-      POSTGRES_PASSWORD: dispotify_password
-      POSTGRES_DB: dispotify_db
+      POSTGRES_DB: dispotify
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - dispotify_net
     ports:
       - "5432:5432"
-    networks:
-      - dispotify-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dispotify_user -d dispotify_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
 
-  backend:
+  api:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: dispotify-api:latest
     environment:
       DATABASE_URL: postgresql://admin:password@db:5432/dispotify
-      SECRET_KEY: your-secret-key-change-in-production
-      ENVIRONMENT: development
     volumes:
-      - ./backend/app:/app/app
-      - backend_uploads:/app/uploads
+      - ./backend:/app
+      - music_files:/app/music_files
+    networks:
+      - dispotify_net
     ports:
       - "8000:8000"
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
     depends_on:
-      db:
-        condition: service_healthy
-    networks:
-      - dispotify-network
-    restart: unless-stopped
+      - db
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    image: dispotify-frontend:latest
     environment:
-      VITE_API_URL: http://backend:8000/api/v1/
+      VITE_API_URL: http://172.31.129.93:8000/api/v1/
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - dispotify_net
     ports:
       - "3000:3000"
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
     depends_on:
-      - backend
-    networks:
-      - dispotify-network
-    restart: unless-stopped
+      - api
 
 volumes:
-  postgres_data:
-  backend_uploads:
+  db_data:
+  music_files:
 
 networks:
-  dispotify-network:
-    driver: bridge
+  dispotify_net:
+    driver: overlay
+    attachable: true

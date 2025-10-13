@@ -5,4 +5,4 @@ RUN npm install -g pnpm
 RUN pnpm install
 COPY . .
 EXPOSE 3000
-CMD ["npm", "run", "dev" ]
+CMD ["pnpm", "run", "dev", "--host", "0.0.0.0", "--port", "3000"]
