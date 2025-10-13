@@ -6,12 +6,11 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
 
-    DATABASE_URL: str = "sqlite:///./music_system.db"
+    DATABASE_URL: str = "postgresql://admin:password@db:5432/dispotify"
 
-
-    UPLOAD_DIR: Path = Path("uploads")
-    MAX_FILE_SIZE: int = 50 * 1024 * 1024
-    ALLOWED_EXTENSIONS: set = {".mp3", ".wav", ".flac", ".ogg"}
+    UPLOAD_DIR: str = "./music_files"
+    MAX_FILE_SIZE: int = 100 * 1024 * 1024
+    ALLOWED_EXTENSIONS: str = ".mp3,.wav,.flac,.ogg"
 
     class Config:
         env_file = ".env"

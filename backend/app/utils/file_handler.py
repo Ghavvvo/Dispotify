@@ -11,16 +11,18 @@ class FileHandler:
             raise HTTPException(status_code=400, detail="Filename is required")
 
         file_ext = Path(file.filename).suffix.lower()
-        if file_ext not in settings.ALLOWED_EXTENSIONS:
+        allowed_exts = [ext.strip() for ext in settings.ALLOWED_EXTENSIONS.split(",")]
+        if file_ext not in allowed_exts:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid file type. Allowed: {settings.ALLOWED_EXTENSIONS}"
+                detail=f"Invalid file type. Allowed: {allowed_exts}"
             )
 
-        settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        upload_dir = Path(settings.UPLOAD_DIR)
+        upload_dir.mkdir(parents=True, exist_ok=True)
 
         unique_filename = f"{uuid.uuid4()}{file_ext}"
-        file_path = settings.UPLOAD_DIR / unique_filename
+        file_path = upload_dir / unique_filename
 
         file_size = 0
         async with aiofiles.open(file_path, 'wb') as f:
