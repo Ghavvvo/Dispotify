@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useRef, useEffect, ReactNode } from 'react';
+import {createContext, useContext, useState, useRef, useEffect, type ReactNode} from 'react';
 import type { ISong } from '../types/ISong.ts';
 
 interface PlayerContextType {

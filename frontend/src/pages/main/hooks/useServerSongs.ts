@@ -49,7 +49,7 @@ export const useServerSongs = () => {
         setIsDeletingSong(false)
     }
     
-    const downloadSong = (id: number) => {
+    /*const downloadSong = (id: number) => {
         setIsGettingSongs(true)
         api.get(`music/${id}/stream`).then((resp) => {
             setSongs(resp)
@@ -67,7 +67,7 @@ export const useServerSongs = () => {
         })
         setIsGettingSongs(false)
     }
-    
+    */
     return {
         songs,
         getSongs,
