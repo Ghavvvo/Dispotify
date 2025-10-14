@@ -60,6 +60,7 @@ export function UploadSong() {
                     <input
                         {...register('file', { required: true })}
                         type={"file"}
+                        accept="audio/*"
                         className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
                     />
                 </div>

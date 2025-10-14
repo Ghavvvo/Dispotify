@@ -46,9 +46,10 @@ def search_music(
         q: Optional[str] = Query(None, description="Search query"),
         genero: Optional[str] = None,
         autor: Optional[str] = None,
+        album: Optional[str] = None,
         db: Session = Depends(get_db)
 ):
-    return MusicService.search_music(db, q or "", genero, autor)
+    return MusicService.search_music(db, q or "", genero, autor, album)
 
 @router.get("/{music_id}", response_model=MusicResponse)
 def get_music(music_id: int, db: Session = Depends(get_db)):

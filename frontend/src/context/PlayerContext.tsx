@@ -1,6 +1,8 @@
 import {createContext, useContext, useState, useRef, useEffect, type ReactNode} from 'react';
 import type { ISong } from '../types/ISong.ts';
 
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api/v1/";
+
 interface PlayerContextType {
     currentSong: ISong | null;
     isPlaying: boolean;
@@ -95,7 +97,7 @@ export const PlayerProvider = ({ children }: PlayerProviderProps) => {
         }
 
         // Cargar nueva canción
-        const streamUrl = `http://127.0.0.1:8000/api/v1/music/${song.id}/stream`;
+        const streamUrl = `${API_URL}music/${song.id}/stream`;
         audioRef.current.src = streamUrl;
         audioRef.current.load();
         

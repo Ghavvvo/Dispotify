@@ -2,30 +2,47 @@ import {SongItem} from "./components/SongItem.tsx";
 import {useServerSongs} from "./hooks/useServerSongs.ts";
 import {useEffect} from "react";
 import {usePlayer} from "../../context/PlayerContext.tsx";
+import {useSearchContext} from "../../context/SearchContext.tsx";
 
 function Main() {
     const {getSongs, songs} = useServerSongs()
     const {setPlaylist} = usePlayer()
+    const {searchResults, activeFilters} = useSearchContext()
     
     useEffect(() => {
         getSongs()
     }, [])
     
+    // Determinar qué canciones mostrar: resultados de búsqueda o todas las canciones
+    const displaySongs = Object.keys(activeFilters).some(key => activeFilters[key as keyof typeof activeFilters]) 
+        ? searchResults 
+        : songs;
+    
     useEffect(() => {
-        if (songs && songs.length > 0) {
-            setPlaylist(songs)
+        if (displaySongs && displaySongs.length > 0) {
+            setPlaylist(displaySongs)
         }
-    }, [songs, setPlaylist])
+    }, [displaySongs, setPlaylist])
+    
+    const hasActiveSearch = Object.keys(activeFilters).some(key => activeFilters[key as keyof typeof activeFilters]);
     
   return (
     <section className={'size-full'}>
-        <h1 className={'text-neutral-100 text-3xl font-bold'}>Hecho para ti</h1>
+        <h1 className={'text-neutral-100 text-3xl font-bold'}>
+            {hasActiveSearch ? 'Resultados de búsqueda' : 'Hecho para ti'}
+        </h1>
       <div>
           <div className={'flex flex-wrap items-center w-full h-full gap-10 mt-20'}>
               {
-                  songs && songs.map(song => 
-                      <SongItem key={song.id} {...song} />
-                  )
+                  displaySongs && displaySongs.length > 0 ? (
+                      displaySongs.map(song => 
+                          <SongItem key={song.id} {...song} />
+                      )
+                  ) : hasActiveSearch ? (
+                      <p className={'text-neutral-100/50 text-lg'}>
+                          No se encontraron canciones con los filtros aplicados
+                      </p>
+                  ) : null
               }
           </div>
       </div>

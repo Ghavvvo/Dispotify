@@ -30,7 +30,8 @@ class MusicService:
             db: Session,
             query: str,
             genero: Optional[str] = None,
-            autor: Optional[str] = None
+            autor: Optional[str] = None,
+            album: Optional[str] = None
     ) -> List[Music]:
         filters = []
 
@@ -48,6 +49,9 @@ class MusicService:
 
         if autor:
             filters.append(Music.autor.ilike(f"%{autor}%"))
+
+        if album:
+            filters.append(Music.album.ilike(f"%{album}%"))
 
         query_obj = db.query(Music)
         for filter_condition in filters:
