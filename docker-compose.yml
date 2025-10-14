@@ -12,7 +12,7 @@ services:
     networks:
       - dispotify_net
     ports:
-      - "5432:5432"
+      - "5435:5435"
     deploy:
       replicas: 1
       placement:
@@ -25,7 +25,7 @@ services:
       dockerfile: Dockerfile
     image: dispotify-api:latest
     environment:
-      DATABASE_URL: postgresql://admin:password@db:5432/dispotify
+      DATABASE_URL: postgresql://admin:password@db:5435/dispotify
     volumes:
       - ./backend:/app
       - music_files:/app/music_files
@@ -47,9 +47,11 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://172.24.144.1:8000/api/v1/
     image: dispotify-frontend:latest
     environment:
-      VITE_API_URL: http://172.31.129.93:8000/api/v1/
+      VITE_API_URL: http://172.24.144.1:8000/api/v1/
     volumes:
       - ./frontend:/app
       - /app/node_modules
