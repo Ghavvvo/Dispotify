@@ -2,7 +2,6 @@ import {useState} from "react";
 import type {ISong} from "../../../types/ISong.ts";
 import {api} from "../../../api/api.ts";
 import {toast} from "react-toastify";
-import {toQueryParams} from "../../../utils/utils.ts";
 
 export const useServerSongs = () => {
     const [songs, setSongs] = useState<ISong[]>()
@@ -29,9 +28,9 @@ export const useServerSongs = () => {
         })
         setIsGettingSongs(false)
     }
-    const uploadSong = (body: unknown, queryParams: object) => {
+    const uploadSong = (body: unknown) => {
         setIsUploadingSong(true)
-        api.post("music/upload?"+toQueryParams(queryParams), body).then((resp) => {
+        api.post("music/upload", body).then((resp) => {
             console.log(resp)
         }).catch((e) => {
             console.error(e)

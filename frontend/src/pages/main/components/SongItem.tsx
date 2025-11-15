@@ -22,7 +22,7 @@ export function SongItem(song: SongItemProps) {
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
         >
-            <div className={'bg-green-950 rounded-lg p-4 relative'}>
+            <div className={'bg-green-950 rounded-lg p-4 relative flex justify-center items-center'}>
                 <Music size={100} className={'text-green-600'}/>
                 {isHovered && (
                     <div className={'absolute inset-0 bg-black/50 rounded-lg flex items-center justify-center'}>

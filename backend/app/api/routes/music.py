@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.core.database import get_db
@@ -11,10 +11,10 @@ router = APIRouter(prefix="/music", tags=["Music"])
 
 @router.post("/upload", response_model=MusicResponse, status_code=201)
 async def upload_music(
-        nombre: str,
-        autor: str,
-        album: Optional[str] = None,
-        genero: Optional[str] = None,
+        nombre: str = Form(...),
+        autor: str = Form(...),
+        album: Optional[str] = Form(None),
+        genero: Optional[str] = Form(None),
         file: UploadFile = File(...),
         db: Session = Depends(get_db)
 ):
