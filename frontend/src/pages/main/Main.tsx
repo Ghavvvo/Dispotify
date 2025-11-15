@@ -1,12 +1,10 @@
 import {SongItem} from "./components/SongItem.tsx";
 import {useServerSongs} from "./hooks/useServerSongs.ts";
 import {useEffect} from "react";
-import {usePlayer} from "../../context/PlayerContext.tsx";
 import {useSearchContext} from "../../context/SearchContext.tsx";
 
 function Main() {
     const {getSongs, songs} = useServerSongs()
-    const {setPlaylist} = usePlayer()
     const {searchResults, activeFilters} = useSearchContext()
     
     useEffect(() => {
@@ -17,12 +15,6 @@ function Main() {
     const displaySongs = Object.keys(activeFilters).some(key => activeFilters[key as keyof typeof activeFilters]) 
         ? searchResults 
         : songs;
-    
-    useEffect(() => {
-        if (displaySongs && displaySongs.length > 0) {
-            setPlaylist(displaySongs)
-        }
-    }, [displaySongs, setPlaylist])
     
     const hasActiveSearch = Object.keys(activeFilters).some(key => activeFilters[key as keyof typeof activeFilters]);
     

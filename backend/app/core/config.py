@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
 
-    DATABASE_URL: str = "postgresql://admin:password@db:5435/dispotify"
+    DATABASE_URL: str = "postgresql://admin:password@db:5432/dispotify"
 
     UPLOAD_DIR: str = "./music_files"
     MAX_FILE_SIZE: int = 100 * 1024 * 1024

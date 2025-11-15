@@ -9,4 +9,5 @@ export interface ISong {
     format: string,
     created_at: Date,
     updated_at: Date
+    url: string
 }

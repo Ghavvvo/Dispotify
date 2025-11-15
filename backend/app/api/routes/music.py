@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.core.database import get_db
 from app.schemas.music import MusicCreate, MusicResponse, MusicUpdate
 from app.services.music_service import MusicService
 from app.utils.file_handler import FileHandler
+from pathlib import Path
 
 router = APIRouter(prefix="/music", tags=["Music"])
 
@@ -18,16 +18,22 @@ async def upload_music(
         file: UploadFile = File(...),
         db: Session = Depends(get_db)
 ):
+    # Guardar el archivo físicamente
     file_path, file_size = await FileHandler.save_file(file)
-
+    
     try:
+        # Generar la URL basada en el nombre del archivo
+        filename = Path(file_path).name
+        url = f"/static/music/{filename}"
+        
+        # Crear el registro en la base de datos
         music_data = MusicCreate(
             nombre=nombre,
             autor=autor,
             album=album,
             genero=genero
         )
-        music = MusicService.create_music(db, music_data, file_path, file_size)
+        music = MusicService.create_music(db, music_data, url, file_size)
         return music
     except Exception as e:
         FileHandler.delete_file(file_path)
@@ -58,23 +64,18 @@ def get_music(music_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Music not found")
     return music
 
-@router.get("/{music_id}/stream")
-def stream_music(music_id: int, db: Session = Depends(get_db)):
-    music = MusicService.get_music_by_id(db, music_id)
-    if not music:
-        raise HTTPException(status_code=404, detail="Music not found")
-
-    return FileResponse(
-        music.file_path,
-        media_type="audio/mpeg",
-        filename=f"{music.nombre}.mp3"
-    )
-
 @router.delete("/{music_id}", status_code=204)
 def delete_music(music_id: int, db: Session = Depends(get_db)):
     music = MusicService.get_music_by_id(db, music_id)
     if not music:
         raise HTTPException(status_code=404, detail="Music not found")
 
-    FileHandler.delete_file(music.file_path)
+    # Extraer el nombre del archivo de la URL y construir la ruta completa
+    filename = Path(music.url).name
+    file_path = Path("./music_files") / filename
+    
+    # Eliminar el archivo físico
+    FileHandler.delete_file(str(file_path))
+    
+    # Eliminar el registro de la base de datos
     MusicService.delete_music(db, music_id)

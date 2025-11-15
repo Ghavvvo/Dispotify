@@ -4,14 +4,12 @@ import Main from "./pages/main/Main.tsx";
 import {UploadSong} from "./pages/upload-song/UploadSong.tsx";
 import {PlayerProvider} from "./context/PlayerContext.tsx";
 import {SearchProvider} from "./context/SearchContext.tsx";
-import {VolumeIndicator} from "./components/VolumeIndicator.tsx";
 
 export function App() {
     
     return (
         <PlayerProvider>
             <SearchProvider>
-                <VolumeIndicator />
                 <Layout>
                     <Routes>
                         <Route path={'/'} element={<Main />} />

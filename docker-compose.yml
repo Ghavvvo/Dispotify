@@ -27,7 +27,6 @@ services:
     environment:
       DATABASE_URL: postgresql://admin:password@db:5432/dispotify
     volumes:
-      - ./backend:/app
       - music_files:/app/music_files
     networks:
       - dispotify_net
@@ -53,7 +52,6 @@ services:
     environment:
       VITE_API_URL: http://127.0.0.1:8000/api/v1/
     volumes:
-      - ./frontend:/app
       - /app/node_modules
     networks:
       - dispotify_net
