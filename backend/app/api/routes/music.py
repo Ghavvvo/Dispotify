@@ -18,15 +18,14 @@ async def upload_music(
         file: UploadFile = File(...),
         db: Session = Depends(get_db)
 ):
-    # Guardar el archivo físicamente
+
     file_path, file_size = await FileHandler.save_file(file)
     
     try:
-        # Generar la URL basada en el nombre del archivo
+
         filename = Path(file_path).name
         url = f"/static/music/{filename}"
-        
-        # Crear el registro en la base de datos
+
         music_data = MusicCreate(
             nombre=nombre,
             autor=autor,
@@ -70,12 +69,9 @@ def delete_music(music_id: int, db: Session = Depends(get_db)):
     if not music:
         raise HTTPException(status_code=404, detail="Music not found")
 
-    # Extraer el nombre del archivo de la URL y construir la ruta completa
     filename = Path(music.url).name
     file_path = Path("./music_files") / filename
-    
-    # Eliminar el archivo físico
+
     FileHandler.delete_file(str(file_path))
-    
-    # Eliminar el registro de la base de datos
+
     MusicService.delete_music(db, music_id)
