@@ -185,4 +185,3 @@ def get_p2p_client() -> P2PClient:
     if _p2p_client is None:
         raise RuntimeError("P2P Client no inicializado")
     return _p2p_client
-
