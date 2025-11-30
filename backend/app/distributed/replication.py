@@ -4,19 +4,19 @@ import aiofiles
 import logging
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 import json
 import time
 
-from app.distributed.raft import RaftNode, get_raft_node
-from app.distributed.communication import (
+from .raft import RaftNode, get_raft_node
+from .communication import (
     NodeInfo,
     P2PClient,
     get_p2p_client,
     P2PException
 )
-from app.distributed.consistent_hash import ConsistentHashRing
+from .consistent_hash import ConsistentHashRing
 
 logger = logging.getLogger(__name__)
 
@@ -467,7 +467,7 @@ def initialize_replication_manager(
 
 
 def getreplication_manager() -> ReplicationManager:
-    
+
     if replication_manager is None:
         raise RuntimeError("Replication Manager no inicializado")
     return replication_manager

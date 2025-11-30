@@ -2,7 +2,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from typing import Optional
 import json
 import logging
-from app.distributed.replication import getreplication_manager
+from app.distributed.replication import get_replication_manager
 from app.distributed.events import get_event_queue
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ async def receive_replicated_file(
         file_data = await file.read()
         
         
-        replication_manager = getreplication_manager()
+        replication_manager = get_replication_manager()
         result = await replication_manager.receive_file(file_data, metadata_dict)
         
         return {
@@ -48,7 +48,7 @@ async def get_replicated_file(file_id: str):
         from pathlib import Path
         from fastapi.responses import FileResponse
         
-        replication_manager = getreplication_manager()
+        replication_manager = get_replication_manager()
         storage_path = replication_manager.storage_path
         
         
@@ -83,7 +83,7 @@ async def delete_replicated_file(file_id: str):
     try:
         from pathlib import Path
         
-        replication_manager = getreplication_manager()
+        replication_manager = get_replication_manager()
         storage_path = replication_manager.storage_path
         
         
@@ -130,7 +130,7 @@ async def receive_broadcast_event(event: dict):
 async def list_local_replicas():
     
     try:
-        replication_manager = getreplication_manager()
+        replication_manager = get_replication_manager()
         storage_path = replication_manager.storage_path
         
         replicas = []
