@@ -32,7 +32,7 @@ class FileReplica:
     replicated_at: float
 
 
-class P2PReplicationManager:
+class ReplicationManager:
     
     
     def __init__(
@@ -57,18 +57,18 @@ class P2PReplicationManager:
         self._register_replication_handler()
         
         logger.info(
-            f"P2P Replication Manager inicializado "
+            f"Replication Manager inicializado "
             f"(storage={storage_path}, factor={replication_factor})"
         )
     
     async def start(self):
         
         self.p2p_client = get_p2p_client()
-        logger.info("P2P Replication Manager iniciado")
+        logger.info("Replication Manager iniciado")
     
     async def stop(self):
         
-        logger.info("P2P Replication Manager detenido")
+        logger.info("Replication Manager detenido")
     
     def _register_replication_handler(self):
         
@@ -272,7 +272,7 @@ class P2PReplicationManager:
                     if response.status == 200:
                         result = await response.json()
                         logger.info(
-                            f"✅ Archivo {file_id} enviado a {node.id} "
+                            f"Archivo {file_id} enviado a {node.id} "
                             f"({result.get('checksum')})"
                         )
                         return True
@@ -325,7 +325,7 @@ class P2PReplicationManager:
             temp_path.rename(final_path)
             
             logger.info(
-                f"✅ Archivo {file_id} recibido y verificado "
+                f"Archivo {file_id} recibido y verificado "
                 f"(checksum={actual_checksum})"
             )
             
@@ -378,7 +378,7 @@ class P2PReplicationManager:
             return True
         else:
             logger.error(
-                f"❌ Checksum mismatch para {file_id}: "
+                f"Checksum mismatch para {file_id}: "
                 f"expected {expected_checksum}, got {actual_checksum}"
             )
             return False
@@ -444,30 +444,30 @@ class P2PReplicationManager:
 
 
 
-_p2p_replication_manager: Optional[P2PReplicationManager] = None
+replication_manager: Optional[ReplicationManager] = None
 
 
-def initialize_p2p_replication_manager(
+def initialize_replication_manager(
     raft_node: RaftNode,
     node_id: str,
     storage_path: Path,
     hash_ring: ConsistentHashRing,
     replication_factor: int = 3
-) -> P2PReplicationManager:
+) -> ReplicationManager:
     
-    global _p2p_replication_manager
-    _p2p_replication_manager = P2PReplicationManager(
+    global replication_manager
+    replication_manager = ReplicationManager(
         raft_node=raft_node,
         node_id=node_id,
         storage_path=storage_path,
         hash_ring=hash_ring,
         replication_factor=replication_factor
     )
-    return _p2p_replication_manager
+    return replication_manager
 
 
-def get_p2p_replication_manager() -> P2PReplicationManager:
+def getreplication_manager() -> ReplicationManager:
     
-    if _p2p_replication_manager is None:
+    if replication_manager is None:
         raise RuntimeError("Replication Manager no inicializado")
-    return _p2p_replication_manager
+    return replication_manager

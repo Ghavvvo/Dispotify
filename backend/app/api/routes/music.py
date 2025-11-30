@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.core.database import get_db
@@ -6,6 +6,9 @@ from app.schemas.music import MusicCreate, MusicResponse, MusicUpdate
 from app.services.music_service import MusicService
 from app.utils.file_handler import FileHandler
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/music", tags=["Music"])
 
@@ -16,7 +19,8 @@ async def upload_music(
         album: Optional[str] = Form(None),
         genero: Optional[str] = Form(None),
         file: UploadFile = File(...),
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        request: Request = None
 ):
 
     file_path, file_size = await FileHandler.save_file(file)
@@ -33,6 +37,27 @@ async def upload_music(
             genero=genero
         )
         music = MusicService.create_music(db, music_data, url, file_size)
+
+        try:
+            if request and hasattr(request.app.state, "raft_node") and hasattr(request.app.state, "replication_manager"):
+                raft_node = request.app.state.raft_node
+                replication_manager = request.app.state.replication_manager
+                if getattr(raft_node, "is_leader", None) and raft_node.is_leader():
+                    await replication_manager.replicate_file(
+                        file_id=filename,
+                        file_path=Path(file_path),
+                        metadata={
+                            "db_id": getattr(music, "id", None),
+                            "url": url,
+                            "nombre": nombre,
+                            "autor": autor
+                        }
+                    )
+                else:
+                    logger.info("Nodo no líder: se omitió replicación en upload")
+        except Exception as rep_e:
+            logger.error(f"Error replicando archivo tras upload: {rep_e}")
+
         return music
     except Exception as e:
         FileHandler.delete_file(file_path)
