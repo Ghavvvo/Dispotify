@@ -30,7 +30,7 @@ class NodeHealth:
     response_time_ms: float = 0.0
 
 
-class P2PServiceDiscovery:
+class ServiceDiscovery:
 
     def __init__(
             self,
@@ -196,20 +196,20 @@ class P2PServiceDiscovery:
         )
 
 
-_p2p_discovery: Optional[P2PServiceDiscovery] = None
+discovery: Optional[ServiceDiscovery] = None
 
 
-def initialize_p2p_discovery(
+def initialize_discovery(
         cluster_nodes: List[NodeInfo],
         **kwargs
-) -> P2PServiceDiscovery:
-    global _p2p_discovery
-    _p2p_discovery = P2PServiceDiscovery(cluster_nodes, **kwargs)
-    return _p2p_discovery
+) -> ServiceDiscovery:
+    global discovery
+    discovery = ServiceDiscovery(cluster_nodes, **kwargs)
+    return discovery
 
 
-def get_p2p_discovery() -> P2PServiceDiscovery:
-    if _p2p_discovery is None:
+def get_discovery() -> ServiceDiscovery:
+    if discovery is None:
         raise RuntimeError("Service Discovery no inicializado")
-    return _p2p_discovery
+    return discovery
 
