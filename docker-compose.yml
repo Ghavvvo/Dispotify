@@ -6,70 +6,156 @@ services:
     environment:
       POSTGRES_DB: dispotify
       POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: admin123
     volumes:
       - db_data:/var/lib/postgresql/data
+      - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - dispotify_net
     ports:
       - "5432:5432"
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-          - node.role == manager
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d dispotify"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  api:
+  api-1:
     build:
       context: ./backend
       dockerfile: Dockerfile
     image: dispotify-api:latest
+    container_name: dispotify_api_1
     environment:
-      DATABASE_URL: postgresql://admin:password@db:5432/dispotify
+      DATABASE_URL: postgresql+asyncpg://admin:admin123@db:5432/dispotify
+      NODE_ID: node-1
+      NODE_ADDRESS: api-1
+      NODE_PORT: 8000
+      VIRTUAL_NODES: 150
+      REPLICATION_FACTOR: 2
+      UPLOAD_DIR: /app/music_files
+      RAFT_ENABLED: "true"
+      RAFT_ELECTION_TIMEOUT_MIN: "1.5"
+      RAFT_ELECTION_TIMEOUT_MAX: "3.0"
+      RAFT_HEARTBEAT_INTERVAL: "0.5"
+      RAFT_DATA_DIR: /data/raft
+      SERVICE_REGISTRY_ENABLED: "true"
+      CLUSTER_NODES: "node-1:api-1:8000,node-2:api-2:8000,node-3:api-3:8000"
+      USE_RAFT_FOR_EVENTS: "true"
     volumes:
-      - music_files:/app/music_files
+      - ./backend:/app
+      - music_files_1:/app/music_files
+      - raft_data_1:/data/raft
     networks:
       - dispotify_net
     ports:
-      - "8000:8000"
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-          - node.role == manager
-      restart_policy:
-        condition: on-failure
+      - "8001:8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  api-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: dispotify-api:latest
+    container_name: dispotify_api_2
+    environment:
+      DATABASE_URL: postgresql+asyncpg://admin:admin123@db:5432/dispotify
+      NODE_ID: node-2
+      NODE_ADDRESS: api-2
+      NODE_PORT: 8000
+      VIRTUAL_NODES: 150
+      REPLICATION_FACTOR: 2
+      UPLOAD_DIR: /app/music_files
+      RAFT_ENABLED: "true"
+      RAFT_ELECTION_TIMEOUT_MIN: "1.5"
+      RAFT_ELECTION_TIMEOUT_MAX: "3.0"
+      RAFT_HEARTBEAT_INTERVAL: "0.5"
+      RAFT_DATA_DIR: /data/raft
+      SERVICE_REGISTRY_ENABLED: "true"
+      CLUSTER_NODES: "node-1:api-1:8000,node-2:api-2:8000,node-3:api-3:8000"
+      USE_RAFT_FOR_EVENTS: "true"
+    volumes:
+      - ./backend:/app
+      - music_files_2:/app/music_files
+      - raft_data_2:/data/raft
+    networks:
+      - dispotify_net
+    ports:
+      - "8002:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  api-3:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: dispotify-api:latest
+    container_name: dispotify_api_3
+    environment:
+      DATABASE_URL: postgresql+asyncpg://admin:admin123@db:5432/dispotify
+      NODE_ID: node-3
+      NODE_ADDRESS: api-3
+      NODE_PORT: 8000
+      VIRTUAL_NODES: 150
+      REPLICATION_FACTOR: 2
+      UPLOAD_DIR: /app/music_files
+      RAFT_ENABLED: "true"
+      RAFT_ELECTION_TIMEOUT_MIN: "1.5"
+      RAFT_ELECTION_TIMEOUT_MAX: "3.0"
+      RAFT_HEARTBEAT_INTERVAL: "0.5"
+      RAFT_DATA_DIR: /data/raft
+      SERVICE_REGISTRY_ENABLED: "true"
+      CLUSTER_NODES: "node-1:api-1:8000,node-2:api-2:8000,node-3:api-3:8000"
+      USE_RAFT_FOR_EVENTS: "true"
+    volumes:
+      - ./backend:/app
+      - music_files_3:/app/music_files
+      - raft_data_3:/data/raft
+    networks:
+      - dispotify_net
+    ports:
+      - "8003:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: http://127.0.0.1:8000/api/v1/
+        VITE_API_URL: http://127.0.0.1:8001/api/v1/
     image: dispotify-frontend:latest
+    container_name: dispotify_frontend
     environment:
-      VITE_API_URL: http://127.0.0.1:8000/api/v1/
+      VITE_API_URL: http://127.0.0.1:8001/api/v1/
     volumes:
       - /app/node_modules
     networks:
       - dispotify_net
     ports:
       - "3000:3000"
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-          - node.role == manager
     depends_on:
-      - api
+      - api-1
+      - api-2
+      - api-3
 
 volumes:
   db_data:
-  music_files:
+  music_files_1:
+  music_files_2:
+  music_files_3:
+  raft_data_1:
+  raft_data_2:
+  raft_data_3:
 
 networks:
   dispotify_net:
-    driver: overlay
+    driver: bridge
     attachable: true
