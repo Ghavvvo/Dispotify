@@ -1,19 +1,13 @@
-
-
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from typing import Optional
 import json
 import logging
-
 from app.distributed.replication import get_p2p_replication_manager
-from app.distributed.events import get_p2p_event_queue
+from app.distributed.events import get_event_queue
 
 logger = logging.getLogger(__name__)
 
-
-
 router = APIRouter(tags=["internal"])
-
 
 @router.post("/internal/replicate")
 async def receive_replicated_file(
@@ -119,7 +113,7 @@ async def delete_replicated_file(file_id: str):
 async def receive_broadcast_event(event: dict):
     
     try:
-        event_queue = get_p2p_event_queue()
+        event_queue = get_event_queue()
         await event_queue.handle_incoming_event(event)
         
         return {

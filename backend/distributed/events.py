@@ -2,8 +2,7 @@ import asyncio
 import time
 import logging
 from typing import Dict, Callable, Awaitable, Any, Optional
-
-from app.distributed.raft import RaftP2PNode, get_raft_node
+from app.distributed.raft import RaftNode, get_raft_node
 from app.distributed.communication import NodeInfo, get_p2p_client, P2PClient
 
 logger = logging.getLogger(__name__)
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 class EventQueue:
     def __init__(
             self,
-            raft_node: RaftP2PNode,
+            raft_node: RaftNode,
             node_id: str,
             use_raft: bool = True
     ):
@@ -201,7 +200,7 @@ _event_queue: Optional[EventQueue] = None
 
 
 def initialize_event_queue(
-        raft_node: RaftP2PNode,
+        raft_node: RaftNode,
         node_id: str,
         use_raft: bool = True
 ) -> EventQueue:

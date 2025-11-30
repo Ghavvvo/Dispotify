@@ -3,18 +3,16 @@ import time
 import logging
 from typing import Optional
 from contextlib import asynccontextmanager
-from app.distributed.raft import RaftP2PNode, get_raft_node
+from app.distributed.raft import RaftNode, get_raft_node
 
 logger = logging.getLogger(__name__)
-
 
 class LockException(Exception):
     pass
 
-
 class DistributedLock:
 
-    def __init__(self, lock_name: str, holder_id: str, raft_node: RaftP2PNode):
+    def __init__(self, lock_name: str, holder_id: str, raft_node: RaftNode):
         self.lock_name = lock_name
         self.holder_id = holder_id
         self.raft_node = raft_node
@@ -133,7 +131,7 @@ class DistributedLock:
 
 class LockManager:
 
-    def __init__(self, raft_node: RaftP2PNode, node_id: str):
+    def __init__(self, raft_node: RaftNode, node_id: str):
         self.raft_node = raft_node
         self.node_id = node_id
 
@@ -224,12 +222,9 @@ class LockManager:
                 locks[lock_name] = value
         return locks
 
-
 lock_manager: Optional[LockManager] = None
-
-
 def initialize_lock_manager(
-        raft_node: RaftP2PNode,
+        raft_node: RaftNode,
         node_id: str
 ) -> LockManager:
     global lock_manager

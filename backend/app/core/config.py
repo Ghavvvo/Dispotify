@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
+import os
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Dispotify"
@@ -7,6 +8,7 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
 
     DATABASE_URL: str = "postgresql://admin:password@db:5432/dispotify"
+    NODE_ID: str = os.getenv("NODE_ID", "node-1")
 
     UPLOAD_DIR: str = "./music_files"
     MAX_FILE_SIZE: int = 100 * 1024 * 1024

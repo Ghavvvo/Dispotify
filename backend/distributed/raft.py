@@ -49,7 +49,7 @@ class LogEntry:
             index=data["index"],
             command=data["command"]
         )
-class RaftP2PNode:
+class RaftNode:
 
 
     def __init__(
@@ -108,7 +108,7 @@ class RaftP2PNode:
         (self.data_dir / "snapshots").mkdir(exist_ok=True)
 
         logger.info(
-            f"Nodo Raft P2P {node_id} inicializado con {len(self.cluster_nodes)} peers"
+            f"Nodo Raft {node_id} inicializado con {len(self.cluster_nodes)} peers"
         )
 
     def _random_election_timeout(self) -> float:
@@ -133,7 +133,7 @@ class RaftP2PNode:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_sender_loop())
 
         logger.info(
-            f"Nodo Raft P2P {self.node_id} iniciado "
+            f"Nodo Raft {self.node_id} iniciado "
             f"(term={self.current_term}, log_size={len(self.log)})"
         )
 
@@ -142,7 +142,7 @@ class RaftP2PNode:
         if not self._running:
             return
 
-        logger.info(f"Deteniendo nodo Raft P2P {self.node_id}...")
+        logger.info(f"Deteniendo nodo Raft {self.node_id}...")
 
         self._running = False
 
@@ -155,7 +155,7 @@ class RaftP2PNode:
 
         await self._persist_state()
 
-        logger.info(f" Nodo Raft P2P {self.node_id} detenido")
+        logger.info(f" Nodo Raft {self.node_id} detenido")
 
 
 
@@ -628,7 +628,7 @@ class RaftP2PNode:
 
 
 
-_raft_node: Optional[RaftP2PNode] = None
+_raft_node: Optional[RaftNode] = None
 
 
 def initialize_raft(
@@ -637,10 +637,10 @@ def initialize_raft(
         cluster_nodes: List[NodeInfo],
         data_dir: str = "/data/raft",
         **kwargs
-) -> RaftP2PNode:
+) -> RaftNode:
 
     global _raft_node
-    _raft_node = RaftP2PNode(
+    _raft_node = RaftNode(
         node_id=node_id,
         node_info=node_info,
         cluster_nodes=cluster_nodes,
@@ -650,8 +650,8 @@ def initialize_raft(
     return _raft_node
 
 
-def get_raft_node() -> RaftP2PNode:
+def get_raft_node() -> RaftNode:
 
     if _raft_node is None:
-        raise RuntimeError("Raft P2P Node no inicializado")
+        raise RuntimeError("Raft Node no inicializado")
     return _raft_node

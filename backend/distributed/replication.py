@@ -1,5 +1,3 @@
-
-
 import asyncio
 import aiohttp
 import aiofiles
@@ -11,7 +9,7 @@ from dataclasses import dataclass
 import json
 import time
 
-from app.distributed.raft import RaftP2PNode, get_raft_node
+from app.distributed.raft import RaftNode, get_raft_node
 from app.distributed.communication import (
     NodeInfo,
     P2PClient,
@@ -39,7 +37,7 @@ class P2PReplicationManager:
     
     def __init__(
         self,
-        raft_node: RaftP2PNode,
+        raft_node: RaftNode,
         node_id: str,
         storage_path: Path,
         hash_ring: ConsistentHashRing,
@@ -101,7 +99,7 @@ class P2PReplicationManager:
         }
         
         logger.info(
-            f"📁 Archivo {file_id} replicado a {len(replicas)} nodos: {replicas}"
+            f"Archivo {file_id} replicado a {len(replicas)} nodos: {replicas}"
         )
     
     def _select_replica_nodes(self, file_id: str) -> List[NodeInfo]:
@@ -450,7 +448,7 @@ _p2p_replication_manager: Optional[P2PReplicationManager] = None
 
 
 def initialize_p2p_replication_manager(
-    raft_node: RaftP2PNode,
+    raft_node: RaftNode,
     node_id: str,
     storage_path: Path,
     hash_ring: ConsistentHashRing,
@@ -471,6 +469,5 @@ def initialize_p2p_replication_manager(
 def get_p2p_replication_manager() -> P2PReplicationManager:
     
     if _p2p_replication_manager is None:
-        raise RuntimeError("P2P Replication Manager no inicializado")
+        raise RuntimeError("Replication Manager no inicializado")
     return _p2p_replication_manager
-
