@@ -25,7 +25,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql://dispotify_user:dispotify_password@db:5432/dispotify_db
+      DATABASE_URL: postgresql://admin:password@db:5432/dispotify
       SECRET_KEY: your-secret-key-change-in-production
       ENVIRONMENT: development
     volumes:
@@ -45,7 +45,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     environment:
-      VITE_API_URL: http://localhost:8000/api/v1/
+      VITE_API_URL: http://backend:8000/api/v1/
     ports:
       - "3000:3000"
     depends_on:

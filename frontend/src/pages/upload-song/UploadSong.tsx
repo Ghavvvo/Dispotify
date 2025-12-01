@@ -16,9 +16,11 @@ export function UploadSong() {
     const onSubmit: SubmitHandler<FormData> = async (data: FormData) => {
         const formData = new FormData();
         formData.append('file', data.file[0]);
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const { file, ...processed } = data;
-        uploadSong(formData, processed);
+        formData.append('nombre', data.nombre);
+        formData.append('autor', data.autor);
+        formData.append('album', data.album);
+        formData.append('genero', data.genero);
+        uploadSong(formData);
     }
 
     return (
@@ -60,6 +62,7 @@ export function UploadSong() {
                     <input
                         {...register('file', { required: true })}
                         type={"file"}
+                        accept="audio/*"
                         className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
                     />
                 </div>

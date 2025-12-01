@@ -11,7 +11,7 @@ class Music(Base):
     album = Column(String, index=True)
     genero = Column(String, index=True)
     duracion = Column(Float)
-    file_path = Column(String, nullable=False, unique=True)
+    url = Column(String, nullable=False)
     file_size = Column(Integer)
     format = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
