@@ -1,0 +1,139 @@
+import asyncio
+import socket
+import logging
+from typing import List, Optional
+from app.distributed.communication import NodeInfo, get_p2p_client, P2PException
+
+logger = logging.getLogger(__name__)
+
+
+class DNSBootstrap:
+
+    def __init__(
+        self,
+        service_name: str,
+        port: int = 8000,
+        max_retries: int = 5,
+        retry_delay: float = 2.0
+    ):
+        self.service_name = service_name
+        self.port = port
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+    async def discover_peers(self) -> List[NodeInfo]:
+        peers = []
+
+        for attempt in range(self.max_retries):
+            try:
+                hostnames = await asyncio.get_event_loop().run_in_executor(
+                    None, socket.gethostbyname_ex, self.service_name
+                )
+
+                _, _, addresses = hostnames
+
+                for idx, addr in enumerate(addresses):
+                    node_id = f"node-{addr.replace('.', '-')}"
+                    peers.append(NodeInfo(
+                        id=node_id,
+                        address=addr,
+                        port=self.port
+                    ))
+
+                if peers:
+                    logger.info(f"DNS Bootstrap descubrio {len(peers)} peers")
+                    return peers
+
+            except socket.gaierror as e:
+                logger.warning(
+                    f"DNS Bootstrap intento {attempt + 1}/{self.max_retries} fallo: {e}"
+                )
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.retry_delay)
+
+        logger.warning("DNS Bootstrap no pudo descubrir peers")
+        return []
+
+    async def find_leader(self, peers: List[NodeInfo]) -> Optional[NodeInfo]:
+        p2p_client = get_p2p_client()
+
+        for peer in peers:
+            try:
+                response = await p2p_client.call_rpc(
+                    peer,
+                    "GET",
+                    "/internal/cluster-info",
+                    retries=1
+                )
+
+                if response.get("is_leader"):
+                    logger.info(f"Lider encontrado: {peer.id}")
+                    return peer
+
+                leader_id = response.get("leader_id")
+                if leader_id:
+                    for p in peers:
+                        if p.id == leader_id:
+                            logger.info(f"Lider encontrado via redirect: {leader_id}")
+                            return p
+
+            except P2PException:
+                continue
+
+        logger.warning("No se pudo encontrar lider en el cluster")
+        return None
+
+    async def register_with_leader(
+        self,
+        leader: NodeInfo,
+        this_node: NodeInfo
+    ):
+        p2p_client = get_p2p_client()
+
+        try:
+            response = await p2p_client.call_rpc(
+                leader,
+                "POST",
+                "/internal/register",
+                data={
+                    "node_id": this_node.id,
+                    "address": this_node.address,
+                    "port": this_node.port
+                },
+                retries=3
+            )
+
+            if response.get("success"):
+                logger.info(f"Registrado exitosamente con lider {leader.id}")
+
+                cluster_nodes = response.get("cluster_nodes", [])
+                return True, cluster_nodes
+            else:
+                error = response.get("error", "unknown")
+                if error == "not_leader":
+                    new_leader_id = response.get("leader_id")
+                    logger.info(f"Nodo ya no es lider, nuevo lider: {new_leader_id}")
+                    return False, []
+
+                logger.error(f"Registro rechazado: {response.get('message')}")
+                return False, []
+
+        except P2PException as e:
+            logger.error(f"Error registrando con lider: {e}")
+            return False, []
+
+
+_bootstrap: Optional[DNSBootstrap] = None
+
+
+def initialize_bootstrap(service_name: str, port: int = 8000) -> DNSBootstrap:
+    global _bootstrap
+    _bootstrap = DNSBootstrap(service_name, port)
+    return _bootstrap
+
+
+def get_bootstrap() -> DNSBootstrap:
+    if _bootstrap is None:
+        raise RuntimeError("Bootstrap no inicializado")
+    return _bootstrap
+
