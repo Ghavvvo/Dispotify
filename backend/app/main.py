@@ -77,14 +77,36 @@ async def lifespan(app: FastAPI):
         heartbeat_interval=float(os.getenv("RAFT_HEARTBEAT_INTERVAL", "0.5"))
     )
 
+    discovery = None
+    hash_ring = None
+
     async def on_become_leader():
-        logger.info("Este nodo se convirtió en LÍDER del cluster (")
+        logger.info("Este nodo se convirtio en LIDER del cluster")
 
     async def on_lose_leadership():
-        logger.info("Este nodo dejó de ser líder ")
+        logger.info("Este nodo dejo de ser lider")
 
     async def on_command_applied(command: dict):
-        logger.debug(f"Comando aplicado: {command.get('type')}")
+        cmd_type = command.get("type")
+
+        if cmd_type == "add_node":
+            node_id = command.get("node_id")
+            address = command.get("address")
+            port = command.get("port")
+
+            if node_id and address and port and discovery and hash_ring:
+                new_node = NodeInfo(id=node_id, address=address, port=port)
+                discovery.add_node(new_node)
+                hash_ring.add_node(node_id)
+                logger.info(f"Nodo agregado al sistema completo: {node_id}")
+
+        elif cmd_type == "remove_node":
+            node_id = command.get("node_id")
+
+            if node_id and discovery and hash_ring:
+                discovery.remove_node(node_id)
+                hash_ring.remove_node(node_id)
+                logger.info(f"Nodo eliminado del sistema completo: {node_id}")
 
     raft_node.set_callbacks(
         on_become_leader=on_become_leader,
@@ -93,17 +115,22 @@ async def lifespan(app: FastAPI):
     )
 
     await raft_node.start()
-    logger.info(
-        f"Raft Node iniciado "
-        f"(term={raft_node.current_term}, cluster_size={len(cluster_nodes)})"
-    )
+    logger.info(f"Raft Node iniciado (term={raft_node.current_term})")
 
     discovery = initialize_discovery(
         health_check_interval=float(os.getenv("HEALTH_CHECK_INTERVAL", "5.0")),
         failure_threshold=int(os.getenv("FAILURE_THRESHOLD", "3"))
     )
+
+    hash_ring = ConsistentHashRing(
+        nodes=[this_node.id],
+        virtual_nodes=int(os.getenv("VIRTUAL_NODES", "150"))
+    )
+
+    discovery.add_node(this_node)
+
     await discovery.start()
-    logger.info("Service Discovery iniciado (modo dinámico)")
+    logger.info("Service Discovery iniciado (modo dinamico)")
 
     lock_manager = initialize_lock_manager(
         raft_node=raft_node,
@@ -119,12 +146,6 @@ async def lifespan(app: FastAPI):
     await event_queue.start()
     logger.info("Event Queue iniciado")
 
-    hash_ring = ConsistentHashRing(
-        nodes=[this_node.id],
-        virtual_nodes=int(os.getenv("VIRTUAL_NODES", "150"))
-    )
-    logger.info(f"Consistent Hash Ring inicializado (nodo local: {this_node.id})")
-
     replication_manager = initialize_replication_manager(
         raft_node=raft_node,
         node_id=settings.NODE_ID,
@@ -135,10 +156,55 @@ async def lifespan(app: FastAPI):
     await replication_manager.start()
     logger.info("File Replication Manager iniciado")
 
-    logger.info(" Sistema distribuido iniciado correctamente")
+    bootstrap_service = os.getenv("BOOTSTRAP_SERVICE")
+    if bootstrap_service:
+        logger.info(f"Iniciando bootstrap DNS con servicio: {bootstrap_service}")
+
+        from app.distributed.bootstrap import DNSBootstrap
+        bootstrap = DNSBootstrap(
+            service_name=bootstrap_service,
+            port=this_node.port
+        )
+
+        peers = await bootstrap.discover_peers()
+
+        if peers:
+            logger.info(f"Bootstrap descubrio {len(peers)} peers potenciales")
+
+            leader = await bootstrap.find_leader(peers)
+
+            if leader:
+                logger.info(f"Intentando registrarse con lider {leader.id}")
+                success, cluster_nodes = await bootstrap.register_with_leader(leader, this_node)
+
+                if success and cluster_nodes:
+                    logger.info(f"Registro exitoso. Cluster tiene {len(cluster_nodes)} nodos")
+
+                    for node_info in cluster_nodes:
+                        if node_info["id"] != this_node.id:
+                            peer_node = NodeInfo(
+                                id=node_info["id"],
+                                address=node_info["address"],
+                                port=node_info["port"]
+                            )
+                            discovery.add_node(peer_node)
+                            raft_node.add_cluster_node(peer_node)
+                            hash_ring.add_node(peer_node.id)
+
+                    logger.info("Nodos del cluster agregados localmente")
+                else:
+                    logger.warning("Fallo en registro con lider")
+            else:
+                logger.info("No se encontro lider, este nodo podria ser el primero del cluster")
+        else:
+            logger.info("No se descubrieron peers via DNS, modo standalone")
+    else:
+        logger.info("BOOTSTRAP_SERVICE no configurado, modo standalone")
+
+    logger.info("Sistema distribuido iniciado correctamente")
     logger.info(f"   - Nodo: {settings.NODE_ID}")
     logger.info(f"   - Address: {this_node.address}:{this_node.port}")
-    logger.info(f"   - Modo: Descubrimiento Dinámico")
+    logger.info(f"   - Modo: Descubrimiento Dinamico")
     logger.info(f"   - Raft term: {raft_node.current_term}")
     logger.info(f"   - Nodos conocidos: {discovery.get_cluster_size()}")
 

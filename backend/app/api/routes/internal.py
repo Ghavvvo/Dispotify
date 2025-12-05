@@ -1,13 +1,124 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from typing import Optional
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
 import json
 import logging
+from pydantic import BaseModel
 from app.distributed.replication import get_replication_manager
 from app.distributed.events import get_event_queue
+from app.distributed.raft import get_raft_node
+from app.distributed.discovery import get_discovery
+from app.distributed.communication import NodeInfo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["internal"])
+
+
+class NodeRegistration(BaseModel):
+    node_id: str
+    address: str
+    port: int
+
+
+@router.post("/internal/register")
+async def register_node(registration: NodeRegistration, request: Request):
+    try:
+        raft_node = get_raft_node()
+
+        if not raft_node.is_leader():
+            if raft_node.leader_id:
+                return {
+                    "success": False,
+                    "error": "not_leader",
+                    "leader_id": raft_node.leader_id,
+                    "message": f"Este nodo no es el lider. Lider actual: {raft_node.leader_id}"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "no_leader",
+                    "message": "No hay lider electo actualmente"
+                }
+
+        new_node = NodeInfo(
+            id=registration.node_id,
+            address=registration.address,
+            port=registration.port
+        )
+
+        command = {
+            "type": "add_node",
+            "node_id": new_node.id,
+            "address": new_node.address,
+            "port": new_node.port
+        }
+
+        success = await raft_node.submit_command(command)
+
+        if success:
+            all_nodes = get_discovery().get_all_nodes()
+            return {
+                "success": True,
+                "message": f"Nodo {registration.node_id} registrado exitosamente",
+                "cluster_nodes": [
+                    {"id": n.id, "address": n.address, "port": n.port}
+                    for n in all_nodes
+                ]
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Fallo al propagar registro via Raft"
+            )
+
+    except Exception as e:
+        logger.error(f"Error registrando nodo: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/health")
+async def health_check():
+    try:
+        raft_node = get_raft_node()
+        return {
+            "status": "healthy",
+            "node_id": raft_node.node_id,
+            "state": raft_node.state.value,
+            "term": raft_node.current_term
+        }
+    except Exception as e:
+        logger.error(f"Error en health check: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="unhealthy")
+
+
+@router.get("/internal/cluster-info")
+async def get_cluster_info(request: Request):
+    try:
+        raft_node = get_raft_node()
+        discovery = get_discovery()
+
+        all_nodes = discovery.get_all_nodes()
+        alive_nodes = discovery.get_alive_nodes()
+
+        return {
+            "leader_id": raft_node.leader_id,
+            "this_node_id": raft_node.node_id,
+            "is_leader": raft_node.is_leader(),
+            "term": raft_node.current_term,
+            "cluster_size": len(all_nodes),
+            "alive_count": len(alive_nodes),
+            "nodes": [
+                {
+                    "id": n.id,
+                    "address": n.address,
+                    "port": n.port,
+                    "status": "alive" if n in alive_nodes else "dead"
+                }
+                for n in all_nodes
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error obteniendo info del cluster: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/internal/replicate")
 async def receive_replicated_file(
@@ -106,6 +217,30 @@ async def delete_replicated_file(file_id: str):
         
     except Exception as e:
         logger.error(f"Error eliminando archivo {file_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/raft/append-entries")
+async def raft_append_entries(request: Request):
+    try:
+        data = await request.json()
+        raft_node = get_raft_node()
+        response = await raft_node.handle_append_entries(data)
+        return response
+    except Exception as e:
+        logger.error(f"Error en append-entries: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/raft/request-vote")
+async def raft_request_vote(request: Request):
+    try:
+        data = await request.json()
+        raft_node = get_raft_node()
+        response = await raft_node.handle_request_vote(data)
+        return response
+    except Exception as e:
+        logger.error(f"Error en request-vote: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
