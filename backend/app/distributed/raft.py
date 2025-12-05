@@ -571,14 +571,40 @@ class RaftNode:
 
     async def _apply_command(self, command: dict):
         cmd_type = command.get("type")
+
         if cmd_type == "set":
             key = command.get("key")
             value = command.get("value")
             self.state_machine[key] = value
+
         elif cmd_type == "delete":
             key = command.get("key")
             self.state_machine.pop(key, None)
 
+        elif cmd_type == "add_node":
+            node_id = command.get("node_id")
+            address = command.get("address")
+            port = command.get("port")
+
+            if node_id and address and port:
+                new_node = NodeInfo(id=node_id, address=address, port=port)
+                self.add_cluster_node(new_node)
+
+                key = f"cluster:nodes:{node_id}"
+                self.state_machine[key] = {
+                    "id": node_id,
+                    "address": address,
+                    "port": port
+                }
+                logger.info(f"Comando add_node aplicado: {node_id}")
+
+        elif cmd_type == "remove_node":
+            node_id = command.get("node_id")
+            if node_id:
+                self.remove_cluster_node(node_id)
+                key = f"cluster:nodes:{node_id}"
+                self.state_machine.pop(key, None)
+                logger.info(f"Comando remove_node aplicado: {node_id}")
 
         if self._on_command_applied:
             try:
