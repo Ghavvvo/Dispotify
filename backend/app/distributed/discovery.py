@@ -130,6 +130,7 @@ class ServiceDiscovery:
     async def _check_node_health(self, health: NodeHealth):
 
         start_time = time.time()
+        was_dead = health.status == NodeStatus.DEAD
 
         try:
 
@@ -146,6 +147,7 @@ class ServiceDiscovery:
             health.last_seen = time.time()
             health.consecutive_failures = 0
             health.response_time_ms = response_time
+
             try:
                 import socket
                 ip_address = socket.gethostbyname(health.node.address)
@@ -157,8 +159,11 @@ class ServiceDiscovery:
             except Exception as e:
                 logger.debug(f"No se pudo actualizar routing table para {health.node.id}: {e}")
 
+            if was_dead:
+                logger.info(f"Nodo {health.node.id} recuperado de estado DEAD")
+
             logger.debug(
-                f" Nodo {health.node.id} alive "
+                f"Nodo {health.node.id} alive "
                 f"(response_time={response_time:.1f}ms)"
             )
 
