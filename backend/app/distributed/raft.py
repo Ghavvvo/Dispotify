@@ -5,11 +5,10 @@ import random
 import json
 import logging
 from enum import Enum
-from typing import List, Optional, Dict, Callable, Awaitable, Any, Set
-from dataclasses import dataclass, asdict
+from typing import List, Optional, Dict, Callable, Awaitable, Any
+from dataclasses import dataclass
 from pathlib import Path
 import aiofiles
-import os
 
 from app.distributed.communication import (
     P2PClient,
@@ -56,7 +55,7 @@ class RaftNode:
             self,
             node_id: str,
             node_info: NodeInfo,
-            cluster_nodes: List[NodeInfo],
+            cluster_nodes: Optional[List[NodeInfo]] = None,
             data_dir: str = "/data/raft",
             election_timeout_min: float = 1.5,
             election_timeout_max: float = 3.0,
@@ -64,7 +63,7 @@ class RaftNode:
     ):
         self.node_id = node_id
         self.node_info = node_info
-        self.cluster_nodes = [n for n in cluster_nodes if n.id != node_id]
+        self.cluster_nodes = [n for n in (cluster_nodes or []) if n.id != node_id]
         self.data_dir = Path(data_dir)
         self.election_timeout_min = election_timeout_min
         self.election_timeout_max = election_timeout_max
@@ -114,6 +113,34 @@ class RaftNode:
     def _random_election_timeout(self) -> float:
 
         return random.uniform(self.election_timeout_min, self.election_timeout_max)
+
+    def add_cluster_node(self, node: NodeInfo):
+        if node.id == self.node_id:
+            logger.debug(f"No se puede agregar el nodo local al cluster")
+            return
+
+        if any(n.id == node.id for n in self.cluster_nodes):
+            logger.debug(f"Nodo {node.id} ya existe en el cluster")
+            return
+
+        self.cluster_nodes.append(node)
+
+        if self.state == NodeState.LEADER:
+            self.next_index[node.id] = len(self.log)
+            self.match_index[node.id] = -1
+
+        logger.info(f"Nodo {node.id} agregado al cluster Raft (total: {len(self.cluster_nodes) + 1})")
+
+    def remove_cluster_node(self, node_id: str):
+        self.cluster_nodes = [n for n in self.cluster_nodes if n.id != node_id]
+        if self.state == NodeState.LEADER:
+            self.next_index.pop(node_id, None)
+            self.match_index.pop(node_id, None)
+
+        logger.info(f"Nodo {node_id} eliminado del cluster Raft (total: {len(self.cluster_nodes) + 1})")
+
+    def get_cluster_nodes(self) -> List[NodeInfo]:
+        return self.cluster_nodes.copy()
 
     async def start(self):
 

@@ -15,8 +15,7 @@ from app.api.routes import internal
 from app.distributed.communication import (
     P2PClient,
     NodeInfo,
-    initialize_p2p_client,
-    parse_cluster_nodes
+    initialize_p2p_client
 )
 from app.distributed.raft import (
     RaftNode,
@@ -50,29 +49,19 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Iniciando sistema distribuido ...")
+    logger.info("Iniciando sistema distribuido con descubrimiento dinámico...")
 
-    cluster_nodes_str = os.getenv("CLUSTER_NODES", "")
-    if not cluster_nodes_str:
-        logger.warning("CLUSTER_NODES no configurado, modo standalone")
-        cluster_nodes = [NodeInfo(
-            id=settings.NODE_ID,
-            address=os.getenv("NODE_ADDRESS", "localhost"),
-            port=int(os.getenv("NODE_PORT", "8000"))
-        )]
-    else:
-        cluster_nodes = parse_cluster_nodes(cluster_nodes_str)
+    # Bootstrap: Definir este nodo
+    this_node = NodeInfo(
+        id=settings.NODE_ID,
+        address=os.getenv("NODE_ADDRESS", "localhost"),
+        port=int(os.getenv("NODE_PORT", "8000"))
+    )
+    logger.info(f"Nodo local: {this_node.id} @ {this_node.address}:{this_node.port}")
 
-    logger.info(f"Cluster configurado con {len(cluster_nodes)} nodos")
-
-    this_node = next((n for n in cluster_nodes if n.id == settings.NODE_ID), None)
-    if not this_node:
-        this_node = NodeInfo(
-            id=settings.NODE_ID,
-            address=os.getenv("NODE_ADDRESS", "localhost"),
-            port=int(os.getenv("NODE_PORT", "8000"))
-        )
-        logger.warning(f"Este nodo ({settings.NODE_ID}) no está en CLUSTER_NODES")
+    # Inicialmente el cluster solo contiene este nodo
+    # Los demás nodos se descubrirán dinámicamente
+    cluster_nodes = [this_node]
 
     p2p_client = initialize_p2p_client(timeout=5.0, max_retries=3)
     await p2p_client.start()
@@ -81,7 +70,7 @@ async def lifespan(app: FastAPI):
     raft_node = initialize_raft(
         node_id=settings.NODE_ID,
         node_info=this_node,
-        cluster_nodes=cluster_nodes,
+        cluster_nodes=None,  # El cluster se formará dinámicamente
         data_dir=os.getenv("RAFT_DATA_DIR", "/data/raft"),
         election_timeout_min=float(os.getenv("RAFT_ELECTION_TIMEOUT_MIN", "1.5")),
         election_timeout_max=float(os.getenv("RAFT_ELECTION_TIMEOUT_MAX", "3.0")),
@@ -110,12 +99,11 @@ async def lifespan(app: FastAPI):
     )
 
     discovery = initialize_discovery(
-        cluster_nodes=cluster_nodes,
         health_check_interval=float(os.getenv("HEALTH_CHECK_INTERVAL", "5.0")),
         failure_threshold=int(os.getenv("FAILURE_THRESHOLD", "3"))
     )
     await discovery.start()
-    logger.info("Service Discovery iniciado")
+    logger.info("Service Discovery iniciado (modo dinámico)")
 
     lock_manager = initialize_lock_manager(
         raft_node=raft_node,
@@ -131,12 +119,11 @@ async def lifespan(app: FastAPI):
     await event_queue.start()
     logger.info("Event Queue iniciado")
 
-    node_ids = [n.id for n in cluster_nodes]
     hash_ring = ConsistentHashRing(
-        nodes=node_ids,
+        nodes=[this_node.id],
         virtual_nodes=int(os.getenv("VIRTUAL_NODES", "150"))
     )
-    logger.info(f"Consistent Hash Ring inicializado con {len(node_ids)} nodos")
+    logger.info(f"Consistent Hash Ring inicializado (nodo local: {this_node.id})")
 
     replication_manager = initialize_replication_manager(
         raft_node=raft_node,
@@ -148,12 +135,12 @@ async def lifespan(app: FastAPI):
     await replication_manager.start()
     logger.info("File Replication Manager iniciado")
 
-    logger.info(" Sistema distribuido  iniciado correctamente")
+    logger.info(" Sistema distribuido iniciado correctamente")
     logger.info(f"   - Nodo: {settings.NODE_ID}")
     logger.info(f"   - Address: {this_node.address}:{this_node.port}")
-    logger.info(f"   - Cluster size: {len(cluster_nodes)}")
+    logger.info(f"   - Modo: Descubrimiento Dinámico")
     logger.info(f"   - Raft term: {raft_node.current_term}")
-    logger.info(f"   - Nodos vivos: {discovery.get_alive_count()}/{len(cluster_nodes)}")
+    logger.info(f"   - Nodos conocidos: {discovery.get_cluster_size()}")
 
     app.state.p2p_client = p2p_client
     app.state.raft_node = raft_node
@@ -162,7 +149,7 @@ async def lifespan(app: FastAPI):
     app.state.event_queue = event_queue
     app.state.replication_manager = replication_manager
     app.state.hash_ring = hash_ring
-    app.state.cluster_nodes = cluster_nodes
+    app.state.this_node = this_node
 
     yield
 

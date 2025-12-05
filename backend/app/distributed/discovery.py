@@ -1,7 +1,7 @@
 import asyncio
 import time
 import logging
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 
@@ -34,12 +34,10 @@ class ServiceDiscovery:
 
     def __init__(
             self,
-            cluster_nodes: List[NodeInfo],
             health_check_interval: float = 5.0,
             failure_threshold: int = 3,
             timeout: float = 2.0
     ):
-        self.cluster_nodes = cluster_nodes
         self.health_check_interval = health_check_interval
         self.failure_threshold = failure_threshold
         self.timeout = timeout
@@ -48,15 +46,28 @@ class ServiceDiscovery:
         self._running = False
         self._health_check_task: Optional[asyncio.Task] = None
 
-        for node in cluster_nodes:
-            self.node_health[node.id] = NodeHealth(
-                node=node,
-                status=NodeStatus.SUSPECTED,
-                last_seen=0.0,
-                consecutive_failures=0
-            )
+        logger.info("Service Discovery inicializado (modo dinámico)")
 
-        logger.info(f"Service Discovery inicializado con {len(cluster_nodes)} nodos")
+    def add_node(self, node: NodeInfo):
+        if node.id in self.node_health:
+            logger.debug(f"Nodo {node.id} ya existe en discovery")
+            return
+
+        self.node_health[node.id] = NodeHealth(
+            node=node,
+            status=NodeStatus.SUSPECTED,
+            last_seen=0.0,
+            consecutive_failures=0
+        )
+        logger.info(f"Nodo {node.id} agregado a Service Discovery")
+
+    def remove_node(self, node_id: str):
+        if node_id in self.node_health:
+            del self.node_health[node_id]
+            logger.info(f"Nodo {node_id} eliminado de Service Discovery")
+
+    def get_all_nodes(self) -> List[NodeInfo]:
+        return [health.node for health in self.node_health.values()]
 
     async def start(self):
 
@@ -103,6 +114,9 @@ class ServiceDiscovery:
                     1 for h in self.node_health.values()
                     if h.status == NodeStatus.ALIVE
                 )
+
+                self.p2p_client.clear_expired_cache()
+
                 logger.debug(
                     f"Health check completado: {alive_count}/{len(self.node_health)} "
                     f"nodos vivos"
@@ -132,6 +146,16 @@ class ServiceDiscovery:
             health.last_seen = time.time()
             health.consecutive_failures = 0
             health.response_time_ms = response_time
+            try:
+                import socket
+                ip_address = socket.gethostbyname(health.node.address)
+                self.p2p_client.update_routing_table(
+                    health.node.id,
+                    ip_address,
+                    health.node.port
+                )
+            except Exception as e:
+                logger.debug(f"No se pudo actualizar routing table para {health.node.id}: {e}")
 
             logger.debug(
                 f" Nodo {health.node.id} alive "
@@ -187,7 +211,7 @@ class ServiceDiscovery:
         return self.node_health.copy()
 
     def get_cluster_size(self) -> int:
-        return len(self.cluster_nodes)
+        return len(self.node_health)
 
     def get_alive_count(self) -> int:
         return sum(
@@ -199,12 +223,9 @@ class ServiceDiscovery:
 discovery: Optional[ServiceDiscovery] = None
 
 
-def initialize_discovery(
-        cluster_nodes: List[NodeInfo],
-        **kwargs
-) -> ServiceDiscovery:
+def initialize_discovery(**kwargs) -> ServiceDiscovery:
     global discovery
-    discovery = ServiceDiscovery(cluster_nodes, **kwargs)
+    discovery = ServiceDiscovery(**kwargs)
     return discovery
 
 

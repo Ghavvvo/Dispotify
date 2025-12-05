@@ -1,6 +1,8 @@
 import asyncio
 import aiohttp
 import logging
+import time
+import socket
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 import json
@@ -25,12 +27,31 @@ class NodeInfo:
         return isinstance(other, NodeInfo) and self.id == other.id
 
 
+@dataclass
+class CachedNodeAddress:
+    node_id: str
+    ip_address: str
+    port: int
+    cached_at: float
+    ttl: float = 30.0
+
+    @property
+    def is_expired(self) -> bool:
+        return (time.time() - self.cached_at) > self.ttl
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.ip_address}:{self.port}"
+
+
 class P2PClient:
 
-    def __init__(self, timeout: float = 5.0, max_retries: int = 3):
+    def __init__(self, timeout: float = 5.0, max_retries: int = 3, cache_ttl: float = 30.0):
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.max_retries = max_retries
+        self.cache_ttl = cache_ttl
         self._session: Optional[aiohttp.ClientSession] = None
+        self._routing_table: Dict[str, CachedNodeAddress] = {}
 
     async def start(self):
 
@@ -41,6 +62,52 @@ class P2PClient:
             json_serialize=json.dumps
         )
         logger.info("P2P HTTP Client iniciado")
+
+    async def resolve_node_address(self, node: NodeInfo) -> str:
+        cached = self._routing_table.get(node.id)
+        if cached and not cached.is_expired:
+            logger.debug(f"Caché hit para {node.id}: {cached.ip_address}")
+            return cached.url
+
+        try:
+            ip_address = await asyncio.get_event_loop().run_in_executor(
+                None, socket.gethostbyname, node.address
+            )
+
+            self.update_routing_table(node.id, ip_address, node.port)
+
+            logger.debug(f"DNS resolvió {node.address} -> {ip_address} para {node.id}")
+            return f"http://{ip_address}:{node.port}"
+
+        except socket.gaierror as e:
+            error_msg = (
+                f"No se pudo resolver dirección para nodo {node.id} (hostname: {node.address}). "
+                f"DNS falló: {e}. No hay caché válida disponible."
+            )
+            logger.error(error_msg)
+            raise P2PException(error_msg)
+
+    def update_routing_table(self, node_id: str, ip_address: str, port: int):
+        self._routing_table[node_id] = CachedNodeAddress(
+            node_id=node_id,
+            ip_address=ip_address,
+            port=port,
+            cached_at=time.time(),
+            ttl=self.cache_ttl
+        )
+        logger.debug(f"Tabla de routing actualizada: {node_id} -> {ip_address}:{port}")
+
+    def get_routing_table(self) -> Dict[str, CachedNodeAddress]:
+        return self._routing_table.copy()
+
+    def clear_expired_cache(self):
+        expired_keys = [
+            node_id for node_id, cached in self._routing_table.items()
+            if cached.is_expired
+        ]
+        for node_id in expired_keys:
+            del self._routing_table[node_id]
+            logger.debug(f"Entrada de caché expirada eliminada: {node_id}")
 
     async def stop(self):
 
@@ -62,11 +129,14 @@ class P2PClient:
             raise P2PException("Client no iniciado, llama a start() primero")
 
         retries = retries if retries is not None else self.max_retries
-        url = f"{node.url}{endpoint}"
         last_error = None
 
         for attempt in range(retries):
             try:
+                # Resolver dirección usando la estrategia híbrida
+                resolved_url = await self.resolve_node_address(node)
+                url = f"{resolved_url}{endpoint}"
+
                 async with self._session.request(
                         method,
                         url,
@@ -93,7 +163,7 @@ class P2PClient:
             except aiohttp.ClientError as e:
                 last_error = str(e)
                 logger.warning(
-                    f"RPC {method} {url} error: {e}, "
+                    f"RPC {method} a {node.id} error: {e}, "
                     f"reintento {attempt + 1}/{retries}"
                 )
                 await asyncio.sleep(0.1 * (attempt + 1))
@@ -101,7 +171,7 @@ class P2PClient:
             except asyncio.TimeoutError:
                 last_error = "Timeout"
                 logger.warning(
-                    f"RPC {method} {url} timeout, "
+                    f"RPC {method} a {node.id} timeout, "
                     f"reintento {attempt + 1}/{retries}"
                 )
                 await asyncio.sleep(0.1 * (attempt + 1))
@@ -144,32 +214,6 @@ class P2PException(Exception):
     pass
 
 
-def parse_cluster_nodes(nodes_str: str) -> List[NodeInfo]:
-    nodes = []
-
-    for i, node_part in enumerate(nodes_str.split(",")):
-        parts = node_part.strip().split(":")
-
-        if len(parts) == 3:
-
-            node_id, address, port = parts
-        elif len(parts) == 2:
-
-            address, port = parts
-            node_id = f"node{i + 1}"
-        else:
-            raise ValueError(
-                f"Formato inválido para nodo: {node_part}. "
-                f"Debe ser 'id:address:port' o 'address:port'"
-            )
-
-        nodes.append(NodeInfo(
-            id=node_id,
-            address=address,
-            port=int(port)
-        ))
-
-    return nodes
 
 
 _p2p_client: Optional[P2PClient] = None
