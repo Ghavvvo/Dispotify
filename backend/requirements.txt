@@ -6,4 +6,6 @@ pydantic-settings==2.1.0
 python-multipart==0.0.6
 aiofiles==23.2.1
 psycopg2-binary==2.9.7
+grpcio==1.60.0
+grpcio-tools==1.60.0
 
