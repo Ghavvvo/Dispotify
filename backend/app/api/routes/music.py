@@ -87,16 +87,3 @@ def get_music(music_id: int, db: Session = Depends(get_db)):
     if not music:
         raise HTTPException(status_code=404, detail="Music not found")
     return music
-
-@router.delete("/{music_id}", status_code=204)
-def delete_music(music_id: int, db: Session = Depends(get_db)):
-    music = MusicService.get_music_by_id(db, music_id)
-    if not music:
-        raise HTTPException(status_code=404, detail="Music not found")
-
-    filename = Path(music.url).name
-    file_path = Path("./music_files") / filename
-
-    FileHandler.delete_file(str(file_path))
-
-    MusicService.delete_music(db, music_id)
