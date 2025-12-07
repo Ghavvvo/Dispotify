@@ -648,12 +648,13 @@ class RaftNode:
         return False
 
     def is_leader(self) -> bool:
-
         return self.state == NodeState.LEADER
 
     def get_leader(self) -> Optional[str]:
-
         return self.leader_id
+
+    def can_serve_read(self) -> bool:
+        return self._running and (self.leader_id is not None or self.is_leader())
 
     def get_status(self) -> dict:
 

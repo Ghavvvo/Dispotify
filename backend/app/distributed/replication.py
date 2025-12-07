@@ -199,10 +199,22 @@ class ReplicationManager:
         
         total_replicas = len(successful_nodes) + 1  
         
+        total_target_nodes = len(target_nodes) + 1
+        quorum_required = (total_target_nodes // 2) + 1
+
+        if total_replicas < quorum_required:
+            error_msg = (
+                f"Quórum no alcanzado: {total_replicas}/{quorum_required} réplicas. "
+                f"Se requieren al menos {quorum_required} réplicas para garantizar durabilidad. "
+                f"Escritura rechazada."
+            )
+            logger.error(error_msg)
+            raise Exception(error_msg)
+
         if total_replicas < self.replication_factor:
             logger.warning(
-                f"Replicación incompleta: {total_replicas}/{self.replication_factor} "
-                f"réplicas"
+                f"Replicación parcial: {total_replicas}/{self.replication_factor} "
+                f"réplicas (quórum {quorum_required} alcanzado)"
             )
         
         
@@ -348,6 +360,77 @@ class ReplicationManager:
         
         return self.raft_node.state_machine.get(f"file_replicas:{file_id}")
     
+    def _file_exists_locally(self, file_id: str) -> bool:
+        exact_path = self.storage_path / file_id
+        if exact_path.exists():
+            return True
+
+        for f in self.storage_path.iterdir():
+            if f.is_file() and file_id in f.name:
+                return True
+
+        return False
+
+    def get_local_file_path(self, file_id: str) -> Optional[Path]:
+
+        exact_path = self.storage_path / file_id
+        if exact_path.exists():
+            return exact_path
+
+        for f in self.storage_path.iterdir():
+            if f.is_file() and file_id in f.name:
+                return f
+
+        return None
+
+    def _get_node_by_id(self, node_id: str) -> Optional[NodeInfo]:
+
+        if node_id == self.node_id:
+            return self.raft_node.node_info
+
+        for node in self.raft_node.cluster_nodes:
+            if node.id == node_id:
+                return node
+
+        return None
+
+    async def get_nearest_replica(self, file_id: str) -> Optional[NodeInfo]:
+        if self._file_exists_locally(file_id):
+            logger.debug(f"Archivo {file_id} encontrado localmente")
+            return self.raft_node.node_info
+
+        replicas_info = self.get_file_replicas(file_id)
+        if replicas_info:
+            replica_nodes = replicas_info.get("replicas", [])
+
+            for node_id in replica_nodes:
+                if node_id != self.node_id:
+                    node = self._get_node_by_id(node_id)
+                    if node:
+                        logger.debug(
+                            f"Archivo {file_id} disponible en réplica {node_id}"
+                        )
+                        return node
+
+        logger.warning(f"No se encontró réplica para {file_id}")
+        return None
+
+    async def get_available_replicas(self, file_id: str) -> List[NodeInfo]:
+        available = []
+
+        if self._file_exists_locally(file_id):
+            available.append(self.raft_node.node_info)
+
+        replicas_info = self.get_file_replicas(file_id)
+        if replicas_info:
+            for node_id in replicas_info.get("replicas", []):
+                if node_id != self.node_id:
+                    node = self._get_node_by_id(node_id)
+                    if node:
+                        available.append(node)
+
+        return available
+
     def get_all_replicas(self) -> Dict[str, Dict]:
         
         replicas = {}
