@@ -10,20 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import aiofiles
 
-from app.distributed.grpc_communication import (
-    GRPCClient,
+from app.distributed.communication import (
+    P2PClient,
     NodeInfo,
-    GRPCException,
-    get_grpc_client
+    P2PException,
+    get_p2p_client
 )
-
-try:
-    from app.distributed.proto import raft_pb2, raft_pb2_grpc
-    import grpc
-except ImportError:
-    raft_pb2 = None
-    raft_pb2_grpc = None
-    grpc = None
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +99,7 @@ class RaftNode:
         self.state_machine: Dict[str, Any] = {}
 
 
-        self.grpc_client: Optional[GRPCClient] = None
+        self.p2p_client: Optional[P2PClient] = None
 
 
         self.data_dir.mkdir(parents=True, exist_ok=True)

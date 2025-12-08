@@ -12,19 +12,15 @@ from app.api.routes import music
 from app.api.routes import distributed
 from app.api.routes import internal
 
-from app.distributed.grpc_communication import (
-    GRPCClient,
+from app.distributed.communication import (
+    P2PClient,
     NodeInfo,
-    initialize_grpc_client
+    initialize_p2p_client
 )
-from app.distributed.grpc_raft import (
+from app.distributed.raft import (
     RaftNode,
     initialize_raft,
     get_raft_node
-)
-from app.distributed.grpc_raft_server import (
-    initialize_grpc_raft_server,
-    get_grpc_raft_server
 )
 from app.distributed.discovery import (
     ServiceDiscovery,
@@ -67,9 +63,9 @@ async def lifespan(app: FastAPI):
     # Los demás nodos se descubrirán dinámicamente
     cluster_nodes = [this_node]
 
-    grpc_client = initialize_grpc_client(timeout=5.0, max_retries=3)
-    await grpc_client.start()
-    logger.info("gRPC Client iniciado")
+    p2p_client = initialize_p2p_client(timeout=5.0, max_retries=3)
+    await p2p_client.start()
+    logger.info("P2P HTTP Client iniciado")
 
     raft_node = initialize_raft(
         node_id=settings.NODE_ID,
@@ -120,11 +116,6 @@ async def lifespan(app: FastAPI):
 
     await raft_node.start()
     logger.info(f"Raft Node iniciado (term={raft_node.current_term})")
-
-    grpc_port = int(os.getenv("GRPC_PORT", str(this_node.port + 1000)))
-    grpc_server = initialize_grpc_raft_server(raft_node, grpc_port)
-    await grpc_server.start()
-    logger.info(f"gRPC Raft Server iniciado en puerto {grpc_port}")
 
     discovery = initialize_discovery(
         health_check_interval=float(os.getenv("HEALTH_CHECK_INTERVAL", "5.0")),
@@ -217,8 +208,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"   - Raft term: {raft_node.current_term}")
     logger.info(f"   - Nodos conocidos: {discovery.get_cluster_size()}")
 
-    app.state.grpc_client = grpc_client
-    app.state.grpc_server = grpc_server
+    app.state.p2p_client = p2p_client
     app.state.raft_node = raft_node
     app.state.discovery = discovery
     app.state.lock_manager = lock_manager
@@ -229,16 +219,15 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("Deteniendo sistema distribuido...")
+    logger.info(" Deteniendo sistema distribuido ...")
 
     await replication_manager.stop()
     await event_queue.stop()
     await discovery.stop()
-    await grpc_server.stop()
     await raft_node.stop()
-    await grpc_client.stop()
+    await p2p_client.stop()
 
-    logger.info("Sistema distribuido detenido")
+    logger.info("Sistema distribuido  detenido")
 
 
 app = FastAPI(
@@ -270,12 +259,12 @@ def root():
         "message": "Dispotify API - Sistema Distribuido",
         "version": settings.VERSION,
         "distributed": True,
-        "architecture": "Peer-to-Peer (gRPC Communication)",
+        "architecture": "Peer-to-Peer (HTTP Direct Communication)",
         "features": [
             "Raft Consensus",
-            "Leader Election via gRPC",
-            "Log Replication via gRPC",
-            "File Replication",
+            "Leader Election via HTTP",
+            "Log Replication via HTTP",
+            "File Replication ",
             "Consistent Hashing",
             "Tolerancia a Fallos con Quorum"
         ]
