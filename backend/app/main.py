@@ -7,7 +7,8 @@ import logging
 import os
 
 from app.core.config import settings
-from app.core.database import engine, Base
+from app.core.database import engine, Base, SessionLocal
+from app.models.music import Music
 from app.api.routes import music
 from app.api.routes import distributed
 from app.api.routes import internal
@@ -51,17 +52,12 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Iniciando sistema distribuido con descubrimiento dinámico...")
 
-    # Bootstrap: Definir este nodo
     this_node = NodeInfo(
         id=settings.NODE_ID,
         address=os.getenv("NODE_ADDRESS", "localhost"),
         port=int(os.getenv("NODE_PORT", "8000"))
     )
     logger.info(f"Nodo local: {this_node.id} @ {this_node.address}:{this_node.port}")
-
-    # Inicialmente el cluster solo contiene este nodo
-    # Los demás nodos se descubrirán dinámicamente
-    cluster_nodes = [this_node]
 
     p2p_client = initialize_p2p_client(timeout=5.0, max_retries=3)
     await p2p_client.start()
@@ -70,7 +66,7 @@ async def lifespan(app: FastAPI):
     raft_node = initialize_raft(
         node_id=settings.NODE_ID,
         node_info=this_node,
-        cluster_nodes=None,  # El cluster se formará dinámicamente
+        cluster_nodes=None,
         data_dir=os.getenv("RAFT_DATA_DIR", "/data/raft"),
         election_timeout_min=float(os.getenv("RAFT_ELECTION_TIMEOUT_MIN", "1.5")),
         election_timeout_max=float(os.getenv("RAFT_ELECTION_TIMEOUT_MAX", "3.0")),
@@ -107,6 +103,50 @@ async def lifespan(app: FastAPI):
                 discovery.remove_node(node_id)
                 hash_ring.remove_node(node_id)
                 logger.info(f"Nodo eliminado del sistema completo: {node_id}")
+
+        elif cmd_type == "create_music":
+            try:
+                db = SessionLocal()
+                try:
+                    existing = db.query(Music).filter(
+                        Music.url == command.get("url")
+                    ).first()
+
+                    if not existing:
+                        new_music = Music(
+                            nombre=command.get("nombre"),
+                            autor=command.get("autor"),
+                            album=command.get("album"),
+                            genero=command.get("genero"),
+                            url=command.get("url"),
+                            file_size=command.get("file_size")
+                        )
+                        db.add(new_music)
+                        db.commit()
+                        logger.info(f"Musica creada en BD local: {command.get('nombre')}")
+                    else:
+                        logger.debug(f"Musica ya existe en BD local: {command.get('url')}")
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Error aplicando create_music a BD local: {e}")
+
+        elif cmd_type == "delete_music":
+            try:
+                db = SessionLocal()
+                try:
+                    music_record = db.query(Music).filter(
+                        Music.id == command.get("music_id")
+                    ).first()
+
+                    if music_record:
+                        db.delete(music_record)
+                        db.commit()
+                        logger.info(f"Musica eliminada de BD local: {command.get('music_id')}")
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Error aplicando delete_music a BD local: {e}")
 
     raft_node.set_callbacks(
         on_become_leader=on_become_leader,

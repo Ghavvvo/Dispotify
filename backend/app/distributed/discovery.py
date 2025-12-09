@@ -212,6 +212,12 @@ class ServiceDiscovery:
     def get_node_health(self, node_id: str) -> Optional[NodeHealth]:
         return self.node_health.get(node_id)
 
+    def get_node_by_id(self, node_id: str) -> Optional[NodeInfo]:
+        health = self.node_health.get(node_id)
+        if health:
+            return health.node
+        return None
+
     def get_all_health(self) -> Dict[str, NodeHealth]:
         return self.node_health.copy()
 

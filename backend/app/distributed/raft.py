@@ -656,6 +656,13 @@ class RaftNode:
     def can_serve_read(self) -> bool:
         return self._running and (self.leader_id is not None or self.is_leader())
 
+    def get_eventual_read_status(self) -> dict:
+        return {
+            "commit_index": self.commit_index,
+            "last_applied": self.last_applied,
+            "lag": max(0, self.commit_index - self.last_applied)
+        }
+
     def get_status(self) -> dict:
 
         return {
