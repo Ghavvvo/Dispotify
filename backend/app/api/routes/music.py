@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.core.database import get_db
 from app.schemas.music import MusicCreate, MusicResponse, MusicUpdate
 from app.services.music_service import MusicService
 from app.utils.file_handler import FileHandler
+from app.distributed.communication import get_p2p_client, P2PException
 from pathlib import Path
 import logging
 
@@ -29,21 +30,52 @@ async def upload_music(
 
         if not raft_node.is_leader():
             leader_id = raft_node.get_leader()
-            leader_address = None
+
+            if not leader_id:
+                raise HTTPException(
+                    status_code=503,
+                    detail="No hay líder disponible en el cluster"
+                )
+
+            leader_node = None
             if hasattr(request.app.state, "discovery"):
                 discovery = request.app.state.discovery
                 leader_node = discovery.get_node_by_id(leader_id)
-                if leader_node:
-                    leader_address = f"http://{leader_node.address}:{leader_node.port}"
 
-            raise HTTPException(
-                status_code=307,
-                detail=f"Este nodo no es el lider. Lider actual: {leader_id}",
-                headers={
-                    "X-Leader-Id": leader_id or "unknown",
-                    "X-Leader-Address": leader_address or "unknown"
-                }
-            )
+            if not leader_node:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"No se puede contactar al líder: {leader_id}"
+                )
+
+            file_content = await file.read()
+
+            try:
+                p2p_client = get_p2p_client()
+                response = await p2p_client.forward_upload(
+                    node=leader_node,
+                    endpoint="/api/v1/music/upload",
+                    file_content=file_content,
+                    filename=file.filename,
+                    form_data={
+                        "nombre": nombre,
+                        "autor": autor,
+                        "album": album,
+                        "genero": genero
+                    }
+                )
+
+                return JSONResponse(
+                    status_code=response["status"],
+                    content=response["data"]
+                )
+
+            except P2PException as e:
+                logger.error(f"Error en forward al líder {leader_id}: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Error al comunicarse con el líder: {str(e)}"
+                )
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="Nombre de archivo requerido")

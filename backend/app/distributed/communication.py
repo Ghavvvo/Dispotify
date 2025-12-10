@@ -209,6 +209,77 @@ class P2PClient:
 
         return responses
 
+    async def forward_upload(
+            self,
+            node: NodeInfo,
+            endpoint: str,
+            file_content: bytes,
+            filename: str,
+            form_data: Dict[str, Any],
+            retries: Optional[int] = None
+    ) -> Dict[str, Any]:
+        if not self._session:
+            raise P2PException("Client no iniciado")
+
+        retries = retries if retries is not None else self.max_retries
+        last_error = None
+
+        for attempt in range(retries):
+            try:
+                resolved_url = await self.resolve_node_address(node)
+                url = f"{resolved_url}{endpoint}"
+
+                data = aiohttp.FormData()
+
+                for key, value in form_data.items():
+                    if value is not None:
+                        data.add_field(key, str(value))
+
+                data.add_field(
+                    'file',
+                    file_content,
+                    filename=filename,
+                    content_type='application/octet-stream'
+                )
+
+                async with self._session.post(url, data=data) as response:
+                    response_data = await response.json()
+
+                    if response.status in (200, 201):
+                        return {"status": response.status, "data": response_data}
+                    elif response.status >= 500:
+                        last_error = f"Server error {response.status}"
+                        logger.warning(
+                            f"Forward upload a {url} falló con {response.status}, "
+                            f"reintento {attempt + 1}/{retries}"
+                        )
+                        await asyncio.sleep(0.1 * (attempt + 1))
+                        continue
+                    else:
+                        return {"status": response.status, "data": response_data}
+
+            except aiohttp.ClientError as e:
+                last_error = str(e)
+                logger.warning(
+                    f"Forward upload a {node.id} error: {e}, "
+                    f"reintento {attempt + 1}/{retries}"
+                )
+                await asyncio.sleep(0.1 * (attempt + 1))
+                continue
+            except asyncio.TimeoutError:
+                last_error = "Timeout"
+                logger.warning(
+                    f"Forward upload a {node.id} timeout, "
+                    f"reintento {attempt + 1}/{retries}"
+                )
+                await asyncio.sleep(0.1 * (attempt + 1))
+                continue
+
+        raise P2PException(
+            f"Forward upload a {node.id} falló después de "
+            f"{retries} intentos: {last_error}"
+        )
+
 
 class P2PException(Exception):
     pass
