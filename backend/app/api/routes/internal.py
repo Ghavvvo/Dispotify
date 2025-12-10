@@ -104,6 +104,8 @@ async def get_cluster_info(request: Request):
             "this_node_id": raft_node.node_id,
             "is_leader": raft_node.is_leader(),
             "term": raft_node.current_term,
+            "log_size": len(raft_node.log),
+            "commit_index": raft_node.commit_index,
             "cluster_size": len(all_nodes),
             "alive_count": len(alive_nodes),
             "nodes": [
@@ -119,6 +121,57 @@ async def get_cluster_info(request: Request):
     except Exception as e:
         logger.error(f"Error obteniendo info del cluster: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+class SyncRequest(BaseModel):
+    node_id: str
+    node_address: str
+    node_port: int
+    current_log_size: int
+    current_term: int
+
+
+@router.post("/internal/request-sync")
+async def request_sync(sync_request: SyncRequest):
+    try:
+        import asyncio
+        raft_node = get_raft_node()
+
+        if not raft_node.is_leader():
+            return {
+                "success": False,
+                "error": "not_leader",
+                "leader_id": raft_node.leader_id,
+                "message": "Este nodo no es el líder"
+            }
+        requesting_node = NodeInfo(
+            id=sync_request.node_id,
+            address=sync_request.node_address,
+            port=sync_request.node_port
+        )
+
+        node_in_cluster = any(n.id == sync_request.node_id for n in raft_node.cluster_nodes)
+
+        if not node_in_cluster:
+            raft_node.add_cluster_node(requesting_node)
+        else:
+            asyncio.create_task(raft_node._sync_node(requesting_node))
+
+        logger.info(
+            f"Sync solicitada por {sync_request.node_id} "
+            f"(log_size={sync_request.current_log_size}, term={sync_request.current_term})"
+        )
+
+        return {
+            "success": True,
+            "message": f"Sincronización iniciada para {sync_request.node_id}",
+            "leader_log_size": len(raft_node.log),
+            "leader_term": raft_node.current_term
+        }
+
+    except Exception as e:
+        logger.error(f"Error en request-sync: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/internal/replicate")
 async def receive_replicated_file(

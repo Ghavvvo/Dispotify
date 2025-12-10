@@ -83,6 +83,7 @@ class RaftNode:
 
         self.next_index: Dict[str, int] = {}
         self.match_index: Dict[str, int] = {}
+        self._failed_nodes: Dict[str, float] = {}
 
 
         self._running = False
@@ -128,6 +129,7 @@ class RaftNode:
         if self.state == NodeState.LEADER:
             self.next_index[node.id] = len(self.log)
             self.match_index[node.id] = -1
+            asyncio.create_task(self._sync_node(node))
 
         logger.info(f"Nodo {node.id} agregado al cluster Raft (total: {len(self.cluster_nodes) + 1})")
 
@@ -163,6 +165,8 @@ class RaftNode:
             f"Nodo Raft {self.node_id} iniciado "
             f"(term={self.current_term}, log_size={len(self.log)})"
         )
+        if self.cluster_nodes:
+            asyncio.create_task(self._request_initial_sync())
 
     async def stop(self):
 
@@ -183,6 +187,59 @@ class RaftNode:
         await self._persist_state()
 
         logger.info(f" Nodo Raft {self.node_id} detenido")
+
+    async def _request_initial_sync(self):
+        await asyncio.sleep(0.5)
+
+        if not self._running or self.state == NodeState.LEADER:
+            return
+
+        logger.info(f"Solicitando sincronización inicial de peers...")
+
+        leader_node = None
+        for peer in self.cluster_nodes:
+            try:
+                response = await self.p2p_client.call_rpc(
+                    peer, "GET", "/internal/cluster-info", retries=1
+                )
+
+                leader_id = response.get("leader_id")
+                if leader_id:
+                    self.leader_id = leader_id
+                    self.last_heartbeat = time.time()
+                    logger.info(f"Sync inicial: líder es {leader_id} (via {peer.id})")
+
+                    if leader_id == peer.id:
+                        leader_node = peer
+                    else:
+                        leader_node = next((n for n in self.cluster_nodes if n.id == leader_id), None)
+                    break
+
+            except P2PException as e:
+                logger.debug(f"No se pudo contactar a {peer.id} para sync inicial: {e}")
+                continue
+
+        if not leader_node:
+            logger.warning("Sync inicial: no se encontró líder")
+            return
+
+        try:
+            await self.p2p_client.call_rpc(
+                leader_node,
+                "POST",
+                "/internal/request-sync",
+                {
+                    "node_id": self.node_id,
+                    "node_address": self.node_info.address,
+                    "node_port": self.node_info.port,
+                    "current_log_size": len(self.log),
+                    "current_term": self.current_term
+                },
+                retries=2
+            )
+            logger.info(f"Sync inicial: notificado al líder {leader_id} que necesitamos sync")
+        except P2PException as e:
+            logger.warning(f"Sync inicial: no se pudo notificar al líder: {e}")
 
 
 
@@ -354,6 +411,92 @@ class RaftNode:
 
 
         await self._send_heartbeats()
+
+        asyncio.create_task(self._sync_all_nodes())
+
+    async def _sync_node(self, peer: NodeInfo):
+
+        if self.state != NodeState.LEADER:
+            return
+
+        max_attempts = 50
+        attempt = 0
+
+        logger.info(f"Iniciando sincronización activa con {peer.id}")
+
+        while self._running and self.state == NodeState.LEADER and attempt < max_attempts:
+            attempt += 1
+
+            if self.match_index.get(peer.id, -1) >= len(self.log) - 1:
+                logger.info(f"Nodo {peer.id} completamente sincronizado (match_index={self.match_index.get(peer.id, -1)})")
+                return
+
+            prev_log_index = self.next_index.get(peer.id, 0) - 1
+            prev_log_term = self.log[prev_log_index].term if prev_log_index >= 0 and prev_log_index < len(self.log) else 0
+
+            next_idx = self.next_index.get(peer.id, 0)
+            entries_to_send = []
+            if next_idx < len(self.log):
+                batch_size = min(100, len(self.log) - next_idx)
+                entries_to_send = [e.to_dict() for e in self.log[next_idx:next_idx + batch_size]]
+
+            request = {
+                "term": self.current_term,
+                "leader_id": self.node_id,
+                "prev_log_index": prev_log_index,
+                "prev_log_term": prev_log_term,
+                "entries": entries_to_send,
+                "leader_commit": self.commit_index
+            }
+
+            try:
+                response = await self.p2p_client.call_rpc(
+                    peer, "POST", "/raft/append-entries", request, retries=1
+                )
+
+                if response.get("term", 0) > self.current_term:
+                    await self._step_down(response["term"])
+                    return
+
+                if response.get("success"):
+                    if entries_to_send:
+                        last_entry_index = prev_log_index + len(entries_to_send)
+                        self.match_index[peer.id] = last_entry_index
+                        self.next_index[peer.id] = last_entry_index + 1
+                        logger.debug(
+                            f"Sync {peer.id}: enviadas {len(entries_to_send)} entradas, "
+                            f"match_index={last_entry_index}"
+                        )
+                else:
+                    follower_log_length = response.get("log_length")
+                    if follower_log_length is not None:
+                        self.next_index[peer.id] = min(self.next_index.get(peer.id, 0), follower_log_length)
+                    else:
+                        self.next_index[peer.id] = max(0, self.next_index.get(peer.id, 0) - 1)
+
+                    logger.debug(f"Sync {peer.id}: ajustando next_index a {self.next_index[peer.id]}")
+
+            except P2PException as e:
+                logger.debug(f"Error en sync con {peer.id}: {e}")
+                await asyncio.sleep(0.5)
+                continue
+
+            await asyncio.sleep(0.1)
+
+        if attempt >= max_attempts:
+            logger.warning(f"Sync con {peer.id} no completada después de {max_attempts} intentos")
+
+    async def _sync_all_nodes(self):
+
+        if self.state != NodeState.LEADER or not self.cluster_nodes:
+            return
+
+        logger.info(f"Líder iniciando sincronización de {len(self.cluster_nodes)} nodos")
+
+        sync_tasks = [self._sync_node(peer) for peer in self.cluster_nodes]
+        await asyncio.gather(*sync_tasks, return_exceptions=True)
+
+        logger.info("Sincronización inicial de nodos completada")
     async def _heartbeat_sender_loop(self):
 
         while self._running:
@@ -406,6 +549,12 @@ class RaftNode:
                 peer, "POST", "/raft/append-entries", request
             )
 
+            was_failed = peer.id in self._failed_nodes
+            if was_failed:
+                del self._failed_nodes[peer.id]
+                logger.info(f"Nodo {peer.id} recuperado, iniciando sincronización activa")
+                asyncio.create_task(self._sync_node(peer))
+                return
 
             if response.get("term", 0) > self.current_term:
 
@@ -419,10 +568,22 @@ class RaftNode:
                     self.match_index[peer.id] = last_entry_index
                     self.next_index[peer.id] = last_entry_index + 1
             else:
+                follower_log_length = response.get("log_length")
 
-                self.next_index[peer.id] = max(0, self.next_index[peer.id] - 1)
+                if follower_log_length is not None:
+                    old_next = self.next_index[peer.id]
+                    self.next_index[peer.id] = min(self.next_index[peer.id], follower_log_length)
+                    logger.debug(
+                        f"Sync rápida {peer.id}: next_index {old_next} -> {self.next_index[peer.id]} "
+                        f"(follower log_length={follower_log_length})"
+                    )
+                else:
+                    self.next_index[peer.id] = max(0, self.next_index[peer.id] - 1)
 
         except P2PException as e:
+            if peer.id not in self._failed_nodes:
+                self._failed_nodes[peer.id] = time.time()
+                logger.warning(f"Nodo {peer.id} marcado como caído")
             logger.debug(f"Error enviando AppendEntries a {peer.id}: {e}")
 
     async def _step_down(self, new_term: int):
@@ -552,11 +713,17 @@ class RaftNode:
                 if self.commit_index > old_commit:
                     await self._apply_committed_entries(old_commit + 1, self.commit_index + 1)
 
-        return {
+        response = {
             "term": self.current_term,
             "success": success,
             "from_node": self.node_id
         }
+
+        if not success:
+            response["log_length"] = len(self.log)
+            response["last_log_term"] = self.log[-1].term if self.log else 0
+
+        return response
 
     async def _apply_committed_entries(self, start_index: int, end_index: int):
 
