@@ -52,10 +52,15 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Iniciando sistema distribuido con descubrimiento dinámico...")
 
+    # Crear tablas de base de datos si no existen
+    logger.info("Inicializando base de datos...")
+    Base.metadata.create_all(bind=engine)
+    logger.info("Base de datos inicializada")
+
     this_node = NodeInfo(
         id=settings.NODE_ID,
-        address=os.getenv("NODE_ADDRESS", "localhost"),
-        port=int(os.getenv("NODE_PORT", "8000"))
+        address=settings.NODE_ADDRESS,
+        port=settings.NODE_PORT
     )
     logger.info(f"Nodo local: {this_node.id} @ {this_node.address}:{this_node.port}")
 
@@ -67,10 +72,12 @@ async def lifespan(app: FastAPI):
         node_id=settings.NODE_ID,
         node_info=this_node,
         cluster_nodes=None,
-        data_dir=os.getenv("RAFT_DATA_DIR", "/data/raft"),
-        election_timeout_min=float(os.getenv("RAFT_ELECTION_TIMEOUT_MIN", "1.5")),
-        election_timeout_max=float(os.getenv("RAFT_ELECTION_TIMEOUT_MAX", "3.0")),
-        heartbeat_interval=float(os.getenv("RAFT_HEARTBEAT_INTERVAL", "0.5"))
+        data_dir=settings.RAFT_DATA_DIR,  # Temporal, se pierde al reiniciar
+        election_timeout_min=settings.RAFT_ELECTION_TIMEOUT_MIN,  # 150ms
+        election_timeout_max=settings.RAFT_ELECTION_TIMEOUT_MAX,  # 300ms
+        heartbeat_interval=settings.RAFT_HEARTBEAT_INTERVAL,      # 100ms
+        solo_mode_timeout=settings.SOLO_MODE_TIMEOUT,            # 15s
+        recovery_grace_period=settings.RECOVERY_GRACE_PERIOD     # 30s
     )
 
     discovery = None
@@ -81,6 +88,26 @@ async def lifespan(app: FastAPI):
 
     async def on_lose_leadership():
         logger.info("Este nodo dejo de ser lider")
+
+    async def on_mode_change(new_mode):
+        """Callback cuando cambia el modo operativo del nodo"""
+        from app.distributed.raft import OperationalMode
+
+        if new_mode == OperationalMode.SOLITARIO:
+            logger.warning(
+                "⚠️  MODO SOLITARIO ACTIVADO - El nodo está completamente aislado. "
+                "Las escrituras se aceptarán pero NO tienen garantías de durabilidad "
+                "hasta reconectarse con el cluster."
+            )
+        elif new_mode == OperationalMode.COOPERATIVO:
+            logger.info(
+                "✓ MODO COOPERATIVO - El nodo está conectado con otros nodos. "
+                "Operación normal con consenso distribuido."
+            )
+        elif new_mode == OperationalMode.RECUPERACION:
+            logger.info(
+                "↻ MODO RECUPERACION - Recuperando estado desde otros nodos..."
+            )
 
     async def on_command_applied(command: dict):
         cmd_type = command.get("type")
@@ -151,7 +178,8 @@ async def lifespan(app: FastAPI):
     raft_node.set_callbacks(
         on_become_leader=on_become_leader,
         on_lose_leadership=on_lose_leadership,
-        on_command_applied=on_command_applied
+        on_command_applied=on_command_applied,
+        on_mode_change=on_mode_change
     )
 
     await raft_node.start()
@@ -164,7 +192,7 @@ async def lifespan(app: FastAPI):
 
     hash_ring = ConsistentHashRing(
         nodes=[this_node.id],
-        virtual_nodes=int(os.getenv("VIRTUAL_NODES", "150"))
+        virtual_nodes=settings.VIRTUAL_NODES
     )
 
     discovery.add_node(this_node)
@@ -191,12 +219,12 @@ async def lifespan(app: FastAPI):
         node_id=settings.NODE_ID,
         storage_path=Path(settings.UPLOAD_DIR),
         hash_ring=hash_ring,
-        replication_factor=int(os.getenv("REPLICATION_FACTOR", "3"))
+        replication_factor=settings.REPLICATION_FACTOR
     )
     await replication_manager.start()
     logger.info("File Replication Manager iniciado")
 
-    bootstrap_service = os.getenv("BOOTSTRAP_SERVICE")
+    bootstrap_service = settings.BOOTSTRAP_SERVICE
     if bootstrap_service:
         logger.info(f"Iniciando bootstrap DNS con servicio: {bootstrap_service}")
 

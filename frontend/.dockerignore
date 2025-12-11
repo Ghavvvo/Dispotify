@@ -1,16 +1,1 @@
-node_modules
-npm-debug.log
-.git
-.gitignore
-.env
-.env.local
-.env.production
-dist
-build
-.DS_Store
-.vscode
-.idea
-*.log
-.eslintcache
-coverage
-.nyc_output
+

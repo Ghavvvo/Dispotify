@@ -21,10 +21,16 @@ logger = logging.getLogger(__name__)
 
 
 class NodeState(Enum):
-
     FOLLOWER = "follower"
     CANDIDATE = "candidate"
     LEADER = "leader"
+
+
+class OperationalMode(Enum):
+    """Modos operativos del nodo según el documento de Raft modificado"""
+    COOPERATIVO = "cooperativo"  # Parte de un grupo conectado (≥2 nodos)
+    SOLITARIO = "solitario"      # Completamente aislado
+    RECUPERACION = "recuperacion" # Transitorio, recuperando datos
 
 
 @dataclass
@@ -57,9 +63,11 @@ class RaftNode:
             node_info: NodeInfo,
             cluster_nodes: Optional[List[NodeInfo]] = None,
             data_dir: str = "/data/raft",
-            election_timeout_min: float = 1.5,
-            election_timeout_max: float = 3.0,
-            heartbeat_interval: float = 0.5
+            election_timeout_min: float = 0.15,  # Más rápido: 150ms
+            election_timeout_max: float = 0.30,  # Más rápido: 300ms
+            heartbeat_interval: float = 0.1,     # Más rápido: 100ms
+            solo_mode_timeout: float = 15.0,     # Timeout para entrar en modo solitario
+            recovery_grace_period: float = 30.0  # Gracia antes de declarar nodo muerto
     ):
         self.node_id = node_id
         self.node_info = node_info
@@ -68,35 +76,46 @@ class RaftNode:
         self.election_timeout_min = election_timeout_min
         self.election_timeout_max = election_timeout_max
         self.heartbeat_interval = heartbeat_interval
+        self.solo_mode_timeout = solo_mode_timeout
+        self.recovery_grace_period = recovery_grace_period
 
-
+        # Persistent state (volátil en contenedor efímero)
         self.current_term = 0
         self.voted_for: Optional[str] = None
         self.log: List[LogEntry] = []
 
-
+        # Volatile state
         self.state = NodeState.FOLLOWER
         self.leader_id: Optional[str] = None
         self.commit_index = -1
         self.last_applied = -1
 
-
+        # Leader state
         self.next_index: Dict[str, int] = {}
         self.match_index: Dict[str, int] = {}
         self._failed_nodes: Dict[str, float] = {}
 
+        # Operational state (nuevo)
+        self.operational_mode = OperationalMode.COOPERATIVO
+        self.vista_activa: List[str] = []  # IDs de nodos que responden ahora
+        self.reloj_logico: int = 0  # Contador monotónico para ordenar eventos
+        self.pending_replication: Dict[str, Any] = {}  # Escrituras pendientes en modo solitario
+        self.last_peer_contact: float = 0.0  # Última vez que se contactó a algún peer
 
+        # Running state
         self._running = False
         self.last_heartbeat = time.time()
         self._election_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._solo_mode_monitor_task: Optional[asyncio.Task] = None
 
-
+        # Callbacks
         self._on_become_leader: Optional[Callable[[], Awaitable[None]]] = None
         self._on_lose_leadership: Optional[Callable[[], Awaitable[None]]] = None
         self._on_command_applied: Optional[Callable[[dict], Awaitable[None]]] = None
+        self._on_mode_change: Optional[Callable[[OperationalMode], Awaitable[None]]] = None
 
-
+        # State machine
         self.state_machine: Dict[str, Any] = {}
 
 
@@ -111,9 +130,83 @@ class RaftNode:
             f"Nodo Raft {node_id} inicializado con {len(self.cluster_nodes)} peers"
         )
 
-    def _random_election_timeout(self) -> float:
+    def set_callbacks(
+        self,
+        on_become_leader: Optional[Callable[[], Awaitable[None]]] = None,
+        on_lose_leadership: Optional[Callable[[], Awaitable[None]]] = None,
+        on_command_applied: Optional[Callable[[dict], Awaitable[None]]] = None,
+        on_mode_change: Optional[Callable[[OperationalMode], Awaitable[None]]] = None
+    ):
+        """Establece callbacks para eventos importantes del nodo"""
+        self._on_become_leader = on_become_leader
+        self._on_lose_leadership = on_lose_leadership
+        self._on_command_applied = on_command_applied
+        self._on_mode_change = on_mode_change
 
+    def _random_election_timeout(self) -> float:
         return random.uniform(self.election_timeout_min, self.election_timeout_max)
+
+    async def _change_operational_mode(self, new_mode: OperationalMode):
+        """Cambia el modo operativo del nodo y notifica via callback"""
+        if self.operational_mode != new_mode:
+            old_mode = self.operational_mode
+            self.operational_mode = new_mode
+            logger.info(f"Cambio de modo operativo: {old_mode.value} -> {new_mode.value}")
+
+            if self._on_mode_change:
+                try:
+                    await self._on_mode_change(new_mode)
+                except Exception as e:
+                    logger.error(f"Error en callback on_mode_change: {e}")
+
+    def _update_vista_activa(self, responding_nodes: List[str]):
+        """Actualiza la lista de nodos que están respondiendo activamente"""
+        old_vista = set(self.vista_activa)
+        new_vista = set(responding_nodes)
+
+        # Log cambios significativos
+        added = new_vista - old_vista
+        removed = old_vista - new_vista
+
+        if added:
+            logger.info(f"Nodos agregados a vista_activa: {added}")
+        if removed:
+            logger.warning(f"Nodos removidos de vista_activa: {removed}")
+
+        self.vista_activa = list(new_vista)
+
+        # Actualizar modo operativo basado en vista activa
+        asyncio.create_task(self._evaluate_operational_mode())
+
+    async def _evaluate_operational_mode(self):
+        """Evalúa y actualiza el modo operativo según la vista activa"""
+        active_count = len(self.vista_activa)
+
+        if active_count >= 1:  # Hay al menos otro nodo además de nosotros
+            if self.operational_mode != OperationalMode.COOPERATIVO:
+                await self._change_operational_mode(OperationalMode.COOPERATIVO)
+        else:  # Solo estamos nosotros
+            # Si llevamos mucho tiempo sin contactar peers, pasar a solitario
+            time_since_contact = time.time() - self.last_peer_contact
+            if time_since_contact >= self.solo_mode_timeout:
+                if self.operational_mode != OperationalMode.SOLITARIO:
+                    await self._change_operational_mode(OperationalMode.SOLITARIO)
+                    logger.warning(
+                        f"Entrando en MODO_SOLITARIO después de {time_since_contact:.1f}s "
+                        f"sin contactar peers"
+                    )
+
+    def get_operational_info(self) -> Dict[str, Any]:
+        """Retorna información sobre el estado operativo actual"""
+        return {
+            "operational_mode": self.operational_mode.value,
+            "vista_activa": self.vista_activa,
+            "vista_activa_count": len(self.vista_activa),
+            "reloj_logico": self.reloj_logico,
+            "pending_replication_count": len(self.pending_replication),
+            "time_since_peer_contact": time.time() - self.last_peer_contact,
+            "is_isolated": self.operational_mode == OperationalMode.SOLITARIO
+        }
 
     def add_cluster_node(self, node: NodeInfo):
         if node.id == self.node_id:
@@ -153,23 +246,30 @@ class RaftNode:
         self._running = True
         self.p2p_client = get_p2p_client()
 
-
+        # Load state and log
         await self._load_state()
         await self._load_log()
 
-
+        # Start background tasks
         self._election_task = asyncio.create_task(self._election_timer_loop())
         self._heartbeat_task = asyncio.create_task(self._heartbeat_sender_loop())
+        self._solo_mode_monitor_task = asyncio.create_task(self._solo_mode_monitor_loop())
 
         logger.info(
             f"Nodo Raft {self.node_id} iniciado "
             f"(term={self.current_term}, log_size={len(self.log)})"
         )
+
+        # Initial sync if we have peers
         if self.cluster_nodes:
+            self.last_peer_contact = time.time()
             asyncio.create_task(self._request_initial_sync())
+        else:
+            # No hay peers conocidos, comenzar como solitario después del timeout
+            logger.info("No hay peers conocidos, evaluando modo solitario...")
+            self.last_peer_contact = 0.0  # Hace mucho tiempo
 
     async def stop(self):
-
         if not self._running:
             return
 
@@ -177,16 +277,18 @@ class RaftNode:
 
         self._running = False
 
-
+        # Cancel background tasks
         if self._election_task:
             self._election_task.cancel()
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self._solo_mode_monitor_task:
+            self._solo_mode_monitor_task.cancel()
 
+        # NOTE: En sistema efímero NO persistimos estado
+        # await self._persist_state()
 
-        await self._persist_state()
-
-        logger.info(f" Nodo Raft {self.node_id} detenido")
+        logger.info(f"Nodo Raft {self.node_id} detenido")
 
     async def _request_initial_sync(self):
         await asyncio.sleep(0.5)
@@ -197,6 +299,7 @@ class RaftNode:
         logger.info(f"Solicitando sincronización inicial de peers...")
 
         leader_node = None
+        leader_id = None
         for peer in self.cluster_nodes:
             try:
                 response = await self.p2p_client.call_rpc(
@@ -219,7 +322,7 @@ class RaftNode:
                 logger.debug(f"No se pudo contactar a {peer.id} para sync inicial: {e}")
                 continue
 
-        if not leader_node:
+        if not leader_node or not leader_id:
             logger.warning("Sync inicial: no se encontró líder")
             return
 
@@ -498,7 +601,6 @@ class RaftNode:
 
         logger.info("Sincronización inicial de nodos completada")
     async def _heartbeat_sender_loop(self):
-
         while self._running:
             try:
                 if self.state == NodeState.LEADER:
@@ -508,6 +610,44 @@ class RaftNode:
 
             except Exception as e:
                 logger.error(f"Error en heartbeat sender: {e}", exc_info=True)
+                await asyncio.sleep(1)
+
+    async def _solo_mode_monitor_loop(self):
+        """Monitorea el estado de conectividad y ajusta el modo operativo"""
+        while self._running:
+            try:
+                # Actualizar vista activa basado en nodos que responden
+                responding_nodes = []
+
+                for peer in self.cluster_nodes:
+                    if peer.id not in self._failed_nodes:
+                        responding_nodes.append(peer.id)
+
+                self._update_vista_activa(responding_nodes)
+
+                # Evaluar si debemos cambiar de modo
+                await self._evaluate_operational_mode()
+
+                # En modo solitario, permitir aceptar escrituras con advertencia
+                if self.operational_mode == OperationalMode.SOLITARIO:
+                    # Si estamos solitarios y no somos líder, autopromovernos
+                    if self.state != NodeState.LEADER and len(self.cluster_nodes) == 0:
+                        logger.info("Modo solitario: autopromoviendo a líder")
+                        self.current_term += 1
+                        self.state = NodeState.LEADER
+                        self.leader_id = self.node_id
+                        self.voted_for = self.node_id
+
+                        if self._on_become_leader:
+                            try:
+                                await self._on_become_leader()
+                            except Exception as e:
+                                logger.error(f"Error en callback on_become_leader: {e}")
+
+                await asyncio.sleep(5.0)  # Evaluar cada 5 segundos
+
+            except Exception as e:
+                logger.error(f"Error en solo mode monitor: {e}", exc_info=True)
                 await asyncio.sleep(1)
 
     async def _send_heartbeats(self):
@@ -543,11 +683,13 @@ class RaftNode:
         await asyncio.gather(*heartbeat_requests, return_exceptions=True)
 
     async def _send_append_entries(self, peer: NodeInfo, request: dict):
-
         try:
             response = await self.p2p_client.call_rpc(
                 peer, "POST", "/raft/append-entries", request
             )
+
+            # Registrar contacto exitoso con peer
+            self.last_peer_contact = time.time()
 
             was_failed = peer.id in self._failed_nodes
             if was_failed:
@@ -557,7 +699,6 @@ class RaftNode:
                 return
 
             if response.get("term", 0) > self.current_term:
-
                 await self._step_down(response["term"])
                 return
 
@@ -652,7 +793,6 @@ class RaftNode:
         }
 
     async def handle_append_entries(self, request: dict) -> dict:
-
         leader_term = request["term"]
         leader_id = request["leader_id"]
         prev_log_index = request["prev_log_index"]
@@ -660,13 +800,17 @@ class RaftNode:
         entries = request["entries"]
         leader_commit = request["leader_commit"]
 
-
+        # Heartbeat recibido - actualizar timestamps
         self.last_heartbeat = time.time()
+        self.last_peer_contact = time.time()
 
+        # Si recibimos heartbeat del líder, salir de modo solitario
+        if self.operational_mode == OperationalMode.SOLITARIO:
+            logger.info("Recibido heartbeat de líder, saliendo de modo solitario")
+            await self._change_operational_mode(OperationalMode.COOPERATIVO)
 
         if leader_term > self.current_term:
             await self._step_down(leader_term)
-
 
         if leader_term == self.current_term and self.leader_id != leader_id:
             self.leader_id = leader_id
@@ -676,26 +820,21 @@ class RaftNode:
         success = False
 
         if leader_term < self.current_term:
-
             pass
         elif prev_log_index >= 0 and (
                 prev_log_index >= len(self.log) or
                 self.log[prev_log_index].term != prev_log_term
         ):
-
             logger.debug(
                 f"Log inconsistency: prev_index={prev_log_index}, "
                 f"prev_term={prev_log_term}"
             )
         else:
-
             success = True
-
 
             if entries:
                 for entry_data in entries:
                     entry = LogEntry.from_dict(entry_data)
-
 
                     if entry.index < len(self.log):
                         if self.log[entry.index].term != entry.term:
@@ -780,11 +919,19 @@ class RaftNode:
                 logger.error(f"Error aplicando comando: {e}", exc_info=True)
 
     async def submit_command(self, command: dict, timeout: float = 10.0) -> bool:
-
+        """
+        Envía un comando al cluster. Soporta modo solitario con advertencias.
+        Retorna True si fue replicado, False si timeout o modo degradado.
+        """
         if not self.is_leader():
             raise Exception(f"No soy líder, líder actual: {self.leader_id}")
 
+        # Incrementar reloj lógico
+        self.reloj_logico += 1
+        command["reloj_logico"] = self.reloj_logico
+        command["timestamp"] = time.time()
 
+        # Crear entrada de log
         entry = LogEntry(
             term=self.current_term,
             index=len(self.log),
@@ -793,16 +940,32 @@ class RaftNode:
         self.log.append(entry)
         await self._persist_log_entry(entry)
 
+        # Si estamos en modo solitario, aceptar pero marcar como pendiente
+        if self.operational_mode == OperationalMode.SOLITARIO:
+            logger.warning(
+                f"Comando aceptado en MODO_SOLITARIO: {command.get('type')} - "
+                f"Replicación pendiente hasta reconexión"
+            )
+            # Marcar para replicación futura
+            self.pending_replication[str(entry.index)] = {
+                "command": command,
+                "timestamp": time.time(),
+                "entry_index": entry.index
+            }
+            # Aplicar localmente de inmediato
+            self.commit_index = entry.index
+            await self._apply_committed_entries(self.last_applied + 1, self.commit_index + 1)
+            return True  # Éxito local, pero sin garantías
 
+        # Modo cooperativo normal - esperar replicación
         start_time = time.time()
         while time.time() - start_time < timeout:
-
             replicated_count = 1
             for peer_id, match_idx in self.match_index.items():
                 if match_idx >= entry.index:
                     replicated_count += 1
 
-
+            # Verificar si tenemos quórum
             if replicated_count >= (len(self.cluster_nodes) + 1) // 2 + 1:
 
                 self.commit_index = entry.index
@@ -831,28 +994,23 @@ class RaftNode:
         }
 
     def get_status(self) -> dict:
-
+        """Retorna el estado completo del nodo incluyendo modo operativo"""
         return {
             "node_id": self.node_id,
             "state": self.state.value,
+            "operational_mode": self.operational_mode.value,
             "term": self.current_term,
             "leader_id": self.leader_id,
             "log_size": len(self.log),
             "commit_index": self.commit_index,
             "last_applied": self.last_applied,
-            "cluster_size": len(self.cluster_nodes) + 1
+            "cluster_size": len(self.cluster_nodes) + 1,
+            "vista_activa_count": len(self.vista_activa),
+            "vista_activa": self.vista_activa,
+            "reloj_logico": self.reloj_logico,
+            "pending_replication": len(self.pending_replication),
+            "time_since_peer_contact": time.time() - self.last_peer_contact if self.last_peer_contact > 0 else None
         }
-
-    def set_callbacks(
-            self,
-            on_become_leader: Optional[Callable[[], Awaitable[None]]] = None,
-            on_lose_leadership: Optional[Callable[[], Awaitable[None]]] = None,
-            on_command_applied: Optional[Callable[[dict], Awaitable[None]]] = None
-    ):
-
-        self._on_become_leader = on_become_leader
-        self._on_lose_leadership = on_lose_leadership
-        self._on_command_applied = on_command_applied
 
 
 

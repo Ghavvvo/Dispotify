@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, DateTime, Float
 from sqlalchemy.sql import func
-from app.core import Base
+from app.core.database import Base
 
 class Music(Base):
     __tablename__ = "music"

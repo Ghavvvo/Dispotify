@@ -99,6 +99,9 @@ async def get_cluster_info(request: Request):
         all_nodes = discovery.get_all_nodes()
         alive_nodes = discovery.get_alive_nodes()
 
+        # Obtener información operativa del nodo
+        operational_info = raft_node.get_operational_info()
+
         return {
             "leader_id": raft_node.leader_id,
             "this_node_id": raft_node.node_id,
@@ -108,6 +111,14 @@ async def get_cluster_info(request: Request):
             "commit_index": raft_node.commit_index,
             "cluster_size": len(all_nodes),
             "alive_count": len(alive_nodes),
+            # Nueva información operativa
+            "operational_mode": operational_info["operational_mode"],
+            "vista_activa": operational_info["vista_activa"],
+            "vista_activa_count": operational_info["vista_activa_count"],
+            "reloj_logico": operational_info["reloj_logico"],
+            "pending_replication": operational_info["pending_replication_count"],
+            "is_isolated": operational_info["is_isolated"],
+            "time_since_peer_contact": operational_info["time_since_peer_contact"],
             "nodes": [
                 {
                     "id": n.id,
