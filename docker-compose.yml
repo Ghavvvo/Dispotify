@@ -20,10 +20,8 @@ services:
       BOOTSTRAP_SERVICE: "dispotify-cluster"
     volumes:
       - ./backend/app:/app/app
-      - ./backend/requirements.txt:/app/requirements.txt
-    tmpfs:
-      - /app/raft_data
-      - /app/music_files
+      - ./music_files_node1:/app/music_files
+      - ./raft_data_node1:/app/raft_data
     ports:
       - "8001:8000"
     networks:
@@ -50,10 +48,8 @@ services:
       BOOTSTRAP_SERVICE: "dispotify-cluster"
     volumes:
       - ./backend/app:/app/app
-      - ./backend/requirements.txt:/app/requirements.txt
-    tmpfs:
-      - /app/raft_data
-      - /app/music_files
+      - ./music_files_node2:/app/music_files
+      - ./raft_data_node2:/app/raft_data
     ports:
       - "8002:8000"
     networks:
