@@ -20,6 +20,7 @@ from app.distributed.communication import (
 )
 from app.distributed.raft import (
     RaftNode,
+    OperationalMode,
     initialize_raft,
     get_raft_node
 )
@@ -90,6 +91,10 @@ async def lifespan(app: FastAPI):
                 discovery.add_node(new_node)
                 hash_ring.add_node(node_id)
                 logger.info(f"Nodo agregado al sistema completo: {node_id}")
+
+                if raft_node.operational_mode == OperationalMode.SOLO and len(raft_node.cluster_nodes) > 0:
+                    raft_node.operational_mode = OperationalMode.PARTITION_LEADER
+                    logger.info("Cambiando de modo SOLO a PARTITION_LEADER")
 
         elif cmd_type == "remove_node":
             node_id = command.get("node_id")
