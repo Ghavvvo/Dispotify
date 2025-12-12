@@ -7,7 +7,7 @@ import logging
 import os
 
 from app.core.config import settings
-from app.core.database import engine, Base, SessionLocal
+from app.core.database import engine, Base, SessionLocal, init_db
 from app.models.music import Music
 from app.api.routes import music
 from app.api.routes import distributed
@@ -248,6 +248,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"   - Raft term: {raft_node.current_term}")
     logger.info(f"   - Nodos conocidos: {discovery.get_cluster_size()}")
 
+    init_db()
+
     app.state.p2p_client = p2p_client
     app.state.raft_node = raft_node
     app.state.discovery = discovery
@@ -333,4 +335,3 @@ async def health():
             "node_id": settings.NODE_ID,
             "version": settings.VERSION
         }
-

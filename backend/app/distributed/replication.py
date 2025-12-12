@@ -549,7 +549,7 @@ def initialize_replication_manager(
     return replication_manager
 
 
-def getreplication_manager() -> ReplicationManager:
+def get_replication_manager() -> ReplicationManager:
 
     if replication_manager is None:
         raise RuntimeError("Replication Manager no inicializado")

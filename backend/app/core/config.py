@@ -1,5 +1,4 @@
 from pydantic_settings import BaseSettings
-from pathlib import Path
 import os
 
 class Settings(BaseSettings):
@@ -7,7 +6,7 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
 
-    DATABASE_URL: str = "postgresql://admin:password@db:5432/dispotify"
+    DATABASE_URL: str = f"sqlite:///./dispotify_{os.getenv('NODE_ID', 'node-1')}.db"
     NODE_ID: str = os.getenv("NODE_ID", "node-1")
 
     UPLOAD_DIR: str = "./music_files"
