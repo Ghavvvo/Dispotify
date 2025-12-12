@@ -384,39 +384,7 @@ class RaftNode:
             self.epoch_number += 1
             self.operational_mode = OperationalMode.PARTITION_FOLLOWER
             logger.info(f"Partición detectada, partition_id={self.partition_id}, epoch={self.epoch_number}, nodes={sorted_ids}")
-            await self._start_election_with_pre_vote(reachable_nodes)
-
-    async def _start_election_with_pre_vote(self, reachable_nodes: List[NodeInfo]):
-        # Pre-vote phase
-        pre_votes_needed = (len(reachable_nodes) + 1) // 2 + 1
-        pre_vote_requests = []
-        last_log_index = len(self.log) - 1
-        last_log_term = self.log[-1].term if self.log else 0
-
-        for peer in reachable_nodes:
-            request = {
-                "term": self.current_term + 1,  # Pre-vote uses next term
-                "candidate_id": self.node_id,
-                "last_log_index": last_log_index,
-                "last_log_term": last_log_term
-            }
-            pre_vote_requests.append(
-                self.p2p_client.call_rpc(peer, "POST", "/raft/pre-request-vote", request)
-            )
-
-        pre_results = await asyncio.gather(*pre_vote_requests, return_exceptions=True)
-        pre_votes_received = 1  # Self vote
-
-        for result in pre_results:
-            if isinstance(result, Exception):
-                continue
-            if result.get("vote_granted"):
-                pre_votes_received += 1
-
-        if pre_votes_received >= pre_votes_needed:
             await self._start_election(reachable_nodes)
-        else:
-            logger.info(f"Pre-voto fallido: {pre_votes_received}/{pre_votes_needed}")
 
     async def _start_election(self, reachable_nodes: Optional[List[NodeInfo]] = None):
         if reachable_nodes is None:
@@ -738,37 +706,6 @@ class RaftNode:
                 self.last_heartbeat = time.time()
                 await self._persist_state()
                 logger.info(f" Voto otorgado a {candidate_id} para term {candidate_term}")
-
-        return {
-            "term": self.current_term,
-            "vote_granted": vote_granted,
-            "from_node": self.node_id
-        }
-
-    async def handle_pre_request_vote(self, request: dict) -> dict:
-
-        candidate_term = request["term"]
-        candidate_id = request["candidate_id"]
-        candidate_last_log_index = request["last_log_index"]
-        candidate_last_log_term = request["last_log_term"]
-
-        vote_granted = False
-
-        if candidate_term < self.current_term:
-            pass
-        else:
-            my_last_log_index = len(self.log) - 1
-            my_last_log_term = self.log[-1].term if self.log else 0
-
-            log_is_up_to_date = (
-                    candidate_last_log_term > my_last_log_term or
-                    (candidate_last_log_term == my_last_log_term and
-                     candidate_last_log_index >= my_last_log_index)
-            )
-
-            if log_is_up_to_date:
-                vote_granted = True
-                logger.debug(f"Pre-voto otorgado a {candidate_id} para term {candidate_term}")
 
         return {
             "term": self.current_term,
