@@ -98,7 +98,7 @@ docker run -d \
   --name frontend \
   --network dispotify-network \
   -p 3000:3000 \
-  -e VITE_API_URL=http://localhost:8001/ \
+  -e VITE_API_URL=http://localhost:8003/api/v1/ \
   dispotify-frontend
 ```
 
