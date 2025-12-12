@@ -277,7 +277,7 @@ app.add_middleware(
 )
 
 app.include_router(music.router, prefix=settings.API_PREFIX)
-app.include_router(distributed.router, prefix=f"{settings.API_PREFIX}/distributed")
+app.include_router(distributed.router, prefix="/distributed")
 app.include_router(internal.router)
 
 

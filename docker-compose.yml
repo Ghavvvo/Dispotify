@@ -67,7 +67,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     environment:
-      VITE_API_URL: http://localhost:8001/api/v1/  # Apunta a backend-1 para pruebas
+      VITE_API_URL: http://localhost:8001/
     ports:
       - "3000:3000"
     depends_on:

@@ -419,9 +419,13 @@ class RaftNode:
 
         results = await asyncio.gather(*vote_requests, return_exceptions=True)
 
-        for result in results:
+        for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.debug(f"Error pidiendo voto: {result}")
+                peer = reachable_nodes[i]
+                if peer.id not in self._failed_nodes:
+                    self._failed_nodes[peer.id] = time.time()
+                    self.cluster_nodes = [n for n in self.cluster_nodes if n.id != peer.id]
+                    logger.warning(f"Nodo {peer.id} marcado como fallido durante elección y removido del cluster")
                 continue
 
             if result.get("vote_granted"):
@@ -545,12 +549,17 @@ class RaftNode:
 
     async def _sync_all_nodes(self):
 
-        if self.state != NodeState.LEADER or not self.cluster_nodes:
+        if self.state != NodeState.LEADER:
             return
 
-        logger.info(f"Líder iniciando sincronización de {len(self.cluster_nodes)} nodos")
+        reachable_nodes = [n for n in self.cluster_nodes if n.id not in self._failed_nodes]
 
-        sync_tasks = [self._sync_node(peer) for peer in self.cluster_nodes]
+        if not reachable_nodes:
+            return
+
+        logger.info(f"Líder iniciando sincronización de {len(reachable_nodes)} nodos")
+
+        sync_tasks = [self._sync_node(peer) for peer in reachable_nodes]
         await asyncio.gather(*sync_tasks, return_exceptions=True)
 
         logger.info("Sincronización inicial de nodos completada")
@@ -572,8 +581,10 @@ class RaftNode:
         if self.state != NodeState.LEADER:
             return
 
+        reachable_nodes = [n for n in self.cluster_nodes if n.id not in self._failed_nodes]
+
         heartbeat_requests = []
-        for peer in self.cluster_nodes:
+        for peer in reachable_nodes:
             prev_log_index = self.next_index[peer.id] - 1
             prev_log_term = self.log[prev_log_index].term if prev_log_index >= 0 else 0
 
@@ -643,7 +654,8 @@ class RaftNode:
         except P2PException as e:
             if peer.id not in self._failed_nodes:
                 self._failed_nodes[peer.id] = time.time()
-                logger.warning(f"Nodo {peer.id} marcado como caído")
+                self.cluster_nodes = [n for n in self.cluster_nodes if n.id != peer.id]
+                logger.warning(f"Nodo {peer.id} marcado como caído y removido del cluster")
             logger.debug(f"Error enviando AppendEntries a {peer.id}: {e}")
 
     async def _step_down(self, new_term: int):
