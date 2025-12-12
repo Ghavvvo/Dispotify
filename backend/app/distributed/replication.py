@@ -333,7 +333,16 @@ class ReplicationManager:
                     f"got {actual_checksum}"
                 )
             
-            
+            # Handle conflicts: if file exists, rename to .conflict
+            if final_path.exists():
+                conflict_path = final_path.with_suffix('.conflict')
+                counter = 1
+                while conflict_path.exists():
+                    conflict_path = final_path.with_suffix(f'.conflict{counter}')
+                    counter += 1
+                final_path = conflict_path
+                logger.warning(f"Conflicto detectado, renombrando a {final_path}")
+
             temp_path.rename(final_path)
             
             logger.info(

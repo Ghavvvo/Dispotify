@@ -1,9 +1,10 @@
-
 import asyncio
 import time
 import random
 import json
 import logging
+import uuid
+import hashlib
 from enum import Enum
 from typing import List, Optional, Dict, Callable, Awaitable, Any
 from dataclasses import dataclass
@@ -27,18 +28,31 @@ class NodeState(Enum):
     LEADER = "leader"
 
 
+class OperationalMode(Enum):
+    SOLO = "solo"
+    PARTITION_LEADER = "partition_leader"
+    PARTITION_FOLLOWER = "partition_follower"
+    MERGING = "merging"
+
+
 @dataclass
 class LogEntry:
 
     term: int
     index: int
     command: Dict[str, Any]
+    origin_partition: Optional[str] = None
+    conflict_flag: Optional[str] = None
+    merge_timestamp: Optional[float] = None
 
     def to_dict(self):
         return {
             "term": self.term,
             "index": self.index,
-            "command": self.command
+            "command": self.command,
+            "origin_partition": self.origin_partition,
+            "conflict_flag": self.conflict_flag,
+            "merge_timestamp": self.merge_timestamp
         }
 
     @classmethod
@@ -46,7 +60,10 @@ class LogEntry:
         return cls(
             term=data["term"],
             index=data["index"],
-            command=data["command"]
+            command=data["command"],
+            origin_partition=data.get("origin_partition"),
+            conflict_flag=data.get("conflict_flag"),
+            merge_timestamp=data.get("merge_timestamp")
         )
 class RaftNode:
 
@@ -101,6 +118,12 @@ class RaftNode:
 
 
         self.p2p_client: Optional[P2PClient] = None
+
+        self.cluster_id = str(uuid.uuid4())
+        self.partition_id = None
+        self.epoch_number = 0
+        self.operational_mode = OperationalMode.SOLO
+        self.known_partitions = {}  # dict[str, dict] e.g., {'partition_id': {'leader': str, 'nodes': list[str], 'epoch': int}}
 
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -255,9 +278,14 @@ class RaftNode:
                 state = json.loads(content)
                 self.current_term = state.get("current_term", 0)
                 self.voted_for = state.get("voted_for")
+                self.cluster_id = state.get("cluster_id", str(uuid.uuid4()))
+                self.partition_id = state.get("partition_id")
+                self.epoch_number = state.get("epoch_number", 0)
+                self.operational_mode = OperationalMode(state.get("operational_mode", "solo"))
+                self.known_partitions = state.get("known_partitions", {})
                 logger.info(
                     f"Estado cargado: term={self.current_term}, "
-                    f"voted_for={self.voted_for}"
+                    f"voted_for={self.voted_for}, cluster_id={self.cluster_id[:8]}..."
                 )
         else:
             logger.info("No hay estado previo, iniciando limpio")
@@ -269,6 +297,11 @@ class RaftNode:
         state = {
             "current_term": self.current_term,
             "voted_for": self.voted_for,
+            "cluster_id": self.cluster_id,
+            "partition_id": self.partition_id,
+            "epoch_number": self.epoch_number,
+            "operational_mode": self.operational_mode.value,
+            "known_partitions": self.known_partitions,
             "updated_at": time.time()
         }
 
@@ -323,9 +356,9 @@ class RaftNode:
                     if elapsed >= timeout:
                         logger.warning(
                             f"Election timeout ({elapsed:.2f}s >= {timeout:.2f}s), "
-                            f"iniciando elección"
+                            f"detectando partición"
                         )
-                        await self._start_election()
+                        await self._detect_partition_and_elect()
 
                 await asyncio.sleep(0.1)
 
@@ -333,8 +366,61 @@ class RaftNode:
                 logger.error(f"Error en election timer: {e}", exc_info=True)
                 await asyncio.sleep(1)
 
-    async def _start_election(self):
+    async def _detect_partition_and_elect(self):
+        reachable_nodes = [n for n in self.cluster_nodes if n.id not in self._failed_nodes]
 
+        if not reachable_nodes:
+            # Isolated node, go to SOLO
+            self.operational_mode = OperationalMode.SOLO
+            self.partition_id = hashlib.sha256(self.node_id.encode()).hexdigest()[:16]
+            self.epoch_number += 1
+            self.state = NodeState.LEADER  # SOLO node acts as leader
+            self.leader_id = self.node_id
+            logger.info(f"Modo SOLO activado, partition_id={self.partition_id}, epoch={self.epoch_number}")
+        else:
+            # Form mini-cluster
+            sorted_ids = sorted([self.node_id] + [n.id for n in reachable_nodes])
+            self.partition_id = hashlib.sha256(','.join(sorted_ids).encode()).hexdigest()[:16]
+            self.epoch_number += 1
+            self.operational_mode = OperationalMode.PARTITION_FOLLOWER
+            logger.info(f"Partición detectada, partition_id={self.partition_id}, epoch={self.epoch_number}, nodes={sorted_ids}")
+            await self._start_election_with_pre_vote(reachable_nodes)
+
+    async def _start_election_with_pre_vote(self, reachable_nodes: List[NodeInfo]):
+        # Pre-vote phase
+        pre_votes_needed = (len(reachable_nodes) + 1) // 2 + 1
+        pre_vote_requests = []
+        last_log_index = len(self.log) - 1
+        last_log_term = self.log[-1].term if self.log else 0
+
+        for peer in reachable_nodes:
+            request = {
+                "term": self.current_term + 1,  # Pre-vote uses next term
+                "candidate_id": self.node_id,
+                "last_log_index": last_log_index,
+                "last_log_term": last_log_term
+            }
+            pre_vote_requests.append(
+                self.p2p_client.call_rpc(peer, "POST", "/raft/pre-request-vote", request)
+            )
+
+        pre_results = await asyncio.gather(*pre_vote_requests, return_exceptions=True)
+        pre_votes_received = 1  # Self vote
+
+        for result in pre_results:
+            if isinstance(result, Exception):
+                continue
+            if result.get("vote_granted"):
+                pre_votes_received += 1
+
+        if pre_votes_received >= pre_votes_needed:
+            await self._start_election(reachable_nodes)
+        else:
+            logger.info(f"Pre-voto fallido: {pre_votes_received}/{pre_votes_needed}")
+
+    async def _start_election(self, reachable_nodes: Optional[List[NodeInfo]] = None):
+        if reachable_nodes is None:
+            reachable_nodes = [n for n in self.cluster_nodes if n.id not in self._failed_nodes]
 
         self.state = NodeState.CANDIDATE
         self.current_term += 1
@@ -342,18 +428,16 @@ class RaftNode:
         self.leader_id = None
         await self._persist_state()
 
-        logger.info(f" Iniciando elección para term {self.current_term}")
-
+        logger.info(f"Iniciando elección para term {self.current_term} en partición {self.partition_id}")
 
         votes_received = 1
-        votes_needed = (len(self.cluster_nodes) + 1) // 2 + 1
-
+        votes_needed = (len(reachable_nodes) + 1) // 2 + 1
 
         last_log_index = len(self.log) - 1
         last_log_term = self.log[-1].term if self.log else 0
 
         vote_requests = []
-        for peer in self.cluster_nodes:
+        for peer in reachable_nodes:
             request = {
                 "term": self.current_term,
                 "candidate_id": self.node_id,
@@ -395,6 +479,8 @@ class RaftNode:
 
         self.state = NodeState.LEADER
         self.leader_id = self.node_id
+
+        self.operational_mode = OperationalMode.PARTITION_LEADER
 
 
         last_log_index = len(self.log) - 1
@@ -446,7 +532,10 @@ class RaftNode:
                 "prev_log_index": prev_log_index,
                 "prev_log_term": prev_log_term,
                 "entries": entries_to_send,
-                "leader_commit": self.commit_index
+                "leader_commit": self.commit_index,
+                "partition_id": self.partition_id,
+                "known_nodes": [n.id for n in self.cluster_nodes] + [self.node_id],
+                "epoch_number": self.epoch_number
             }
 
             try:
@@ -533,7 +622,10 @@ class RaftNode:
                 "prev_log_index": prev_log_index,
                 "prev_log_term": prev_log_term,
                 "entries": entries_to_send,
-                "leader_commit": self.commit_index
+                "leader_commit": self.commit_index,
+                "partition_id": self.partition_id,
+                "known_nodes": [n.id for n in self.cluster_nodes] + [self.node_id],
+                "epoch_number": self.epoch_number
             }
 
             heartbeat_requests.append(
@@ -601,11 +693,13 @@ class RaftNode:
         self.leader_id = None
         await self._persist_state()
 
-        if was_leader and self._on_lose_leadership:
-            try:
-                await self._on_lose_leadership()
-            except Exception as e:
-                logger.error(f"Error en callback on_lose_leadership: {e}")
+        if was_leader:
+            self.operational_mode = OperationalMode.PARTITION_FOLLOWER
+            if self._on_lose_leadership:
+                try:
+                    await self._on_lose_leadership()
+                except Exception as e:
+                    logger.error(f"Error en callback on_lose_leadership: {e}")
 
     async def handle_request_vote(self, request: dict) -> dict:
 
@@ -651,6 +745,37 @@ class RaftNode:
             "from_node": self.node_id
         }
 
+    async def handle_pre_request_vote(self, request: dict) -> dict:
+
+        candidate_term = request["term"]
+        candidate_id = request["candidate_id"]
+        candidate_last_log_index = request["last_log_index"]
+        candidate_last_log_term = request["last_log_term"]
+
+        vote_granted = False
+
+        if candidate_term < self.current_term:
+            pass
+        else:
+            my_last_log_index = len(self.log) - 1
+            my_last_log_term = self.log[-1].term if self.log else 0
+
+            log_is_up_to_date = (
+                    candidate_last_log_term > my_last_log_term or
+                    (candidate_last_log_term == my_last_log_term and
+                     candidate_last_log_index >= my_last_log_index)
+            )
+
+            if log_is_up_to_date:
+                vote_granted = True
+                logger.debug(f"Pre-voto otorgado a {candidate_id} para term {candidate_term}")
+
+        return {
+            "term": self.current_term,
+            "vote_granted": vote_granted,
+            "from_node": self.node_id
+        }
+
     async def handle_append_entries(self, request: dict) -> dict:
 
         leader_term = request["term"]
@@ -660,9 +785,21 @@ class RaftNode:
         entries = request["entries"]
         leader_commit = request["leader_commit"]
 
+        partition_id = request.get("partition_id")
+        known_nodes = request.get("known_nodes", [])
+        epoch_number = request.get("epoch_number", 0)
 
         self.last_heartbeat = time.time()
 
+        if partition_id:
+            self.known_partitions[partition_id] = {
+                'leader': leader_id,
+                'nodes': known_nodes,
+                'epoch': epoch_number
+            }
+
+        if partition_id and partition_id != self.partition_id:
+            await self._handle_partition_merge(partition_id, leader_id, epoch_number)
 
         if leader_term > self.current_term:
             await self._step_down(leader_term)
@@ -773,6 +910,9 @@ class RaftNode:
                 self.state_machine.pop(key, None)
                 logger.info(f"Comando remove_node aplicado: {node_id}")
 
+        elif cmd_type == "merge_logs":
+            await self._apply_merge_logs(command)
+
         if self._on_command_applied:
             try:
                 await self._on_command_applied(command)
@@ -788,7 +928,10 @@ class RaftNode:
         entry = LogEntry(
             term=self.current_term,
             index=len(self.log),
-            command=command
+            command=command,
+            origin_partition=self.partition_id,
+            merge_timestamp=time.time(),
+            conflict_flag="POTENTIAL" if self.operational_mode == OperationalMode.SOLO else None
         )
         self.log.append(entry)
         await self._persist_log_entry(entry)
@@ -821,7 +964,7 @@ class RaftNode:
         return self.leader_id
 
     def can_serve_read(self) -> bool:
-        return self._running and (self.leader_id is not None or self.is_leader())
+        return self._running and (self.leader_id is not None or self.is_leader() or self.operational_mode == OperationalMode.SOLO)
 
     def get_eventual_read_status(self) -> dict:
         return {
@@ -835,8 +978,13 @@ class RaftNode:
         return {
             "node_id": self.node_id,
             "state": self.state.value,
+            "operational_mode": self.operational_mode.value,
             "term": self.current_term,
             "leader_id": self.leader_id,
+            "partition_id": self.partition_id,
+            "epoch_number": self.epoch_number,
+            "cluster_id": self.cluster_id,
+            "known_partitions": self.known_partitions,
             "log_size": len(self.log),
             "commit_index": self.commit_index,
             "last_applied": self.last_applied,
@@ -854,6 +1002,100 @@ class RaftNode:
         self._on_lose_leadership = on_lose_leadership
         self._on_command_applied = on_command_applied
 
+    async def _handle_partition_merge(self, other_partition: str, other_leader: str, other_epoch: int):
+        if other_epoch > self.epoch_number:
+            # Join the other partition
+            logger.info(f"Uniendo partición superior: {other_partition} (epoch {other_epoch} > {self.epoch_number})")
+            self.partition_id = other_partition
+            self.epoch_number = other_epoch
+            self.operational_mode = OperationalMode.PARTITION_FOLLOWER
+            self.leader_id = other_leader
+            await self._persist_state()
+        elif other_epoch == self.epoch_number and self.is_leader():
+            # Merge with equal epoch
+            await self._initiate_merge(other_partition, other_leader)
+
+    async def _initiate_merge(self, other_partition: str, other_leader: str):
+        logger.info(f"Iniciando merge con partición {other_partition}, líder {other_leader}")
+        # Get other node's info
+        other_node = next((n for n in self.cluster_nodes if n.id == other_leader), None)
+        if not other_node:
+            logger.warning(f"No se encontró nodo para líder {other_leader}")
+            return
+        # Send merge request
+        try:
+            response = await self.p2p_client.call_rpc(
+                other_node, "POST", "/raft/merge-request", {
+                    "initiator_partition": self.partition_id,
+                    "initiator_epoch": self.epoch_number,
+                    "log_size": len(self.log),
+                    "last_log_term": self.log[-1].term if self.log else 0
+                }
+            )
+            if response.get("accepted"):
+                # Exchange logs
+                await self._exchange_logs_for_merge(other_node, response)
+            else:
+                logger.info(f"Merge rechazado por {other_leader}")
+        except P2PException as e:
+            logger.error(f"Error en merge request: {e}")
+
+    async def _exchange_logs_for_merge(self, other_node: NodeInfo, response: dict):
+        # Get other log
+        other_log_size = response.get("log_size", 0)
+        # For simplicity, assume we send our log and receive theirs
+        # In practice, send batches
+        merge_command = {
+            "type": "merge_logs",
+            "other_partition": response.get("partition"),
+            "other_log": response.get("log_entries", []),
+            "timestamp": time.time()
+        }
+        await self.submit_command(merge_command)
+
+    async def _apply_merge_logs(self, command: dict):
+        other_log = command.get("other_log", [])
+        # Resolve conflicts
+        for entry_data in other_log:
+            entry = LogEntry.from_dict(entry_data)
+            if entry.index < len(self.log):
+                existing = self.log[entry.index]
+                if existing.term != entry.term or existing.command != entry.command:
+                    # Conflict
+                    if entry.merge_timestamp and existing.merge_timestamp:
+                        if entry.merge_timestamp < existing.merge_timestamp:
+                            # Keep existing
+                            continue
+                        else:
+                            # Replace with entry
+                            self.log[entry.index] = entry
+                            await self._persist_log_entry(entry)
+                    else:
+                        # Mark conflict
+                        entry.conflict_flag = "CONFLICT"
+                        self.log[entry.index] = entry
+                        await self._persist_log_entry(entry)
+            elif entry.index == len(self.log):
+                self.log.append(entry)
+                await self._persist_log_entry(entry)
+        # Update epoch
+        self.epoch_number += 1
+        self.operational_mode = OperationalMode.MERGING
+        await self._persist_state()
+        logger.info("Merge de logs completado")
+
+    async def handle_merge_request(self, request: dict) -> dict:
+        initiator_partition = request["initiator_partition"]
+        initiator_epoch = request["initiator_epoch"]
+        if initiator_epoch < self.epoch_number:
+            return {"accepted": False}
+        # Accept and send log
+        log_entries = [e.to_dict() for e in self.log]
+        return {
+            "accepted": True,
+            "partition": self.partition_id,
+            "log_entries": log_entries
+        }
 
 
 _raft_node: Optional[RaftNode] = None

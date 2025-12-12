@@ -12,14 +12,54 @@ services:
       NODE_ID: node-1
       NODE_ADDRESS: backend-1
       NODE_PORT: 8000
+      API_PORT: 8000
+      VIRTUAL_NODES: 150
+      REPLICATION_FACTOR: 2
+      UPLOAD_DIR: /app/music_files
+      RAFT_DATA_DIR: /app/raft_data
+      BOOTSTRAP_SERVICE: "dispotify-cluster"
     volumes:
       - ./backend/app:/app/app
-      - backend_uploads:/app/music_files
-      - db_data:/app/data
+      - ./backend/requirements.txt:/app/requirements.txt
+    tmpfs:
+      - /app/raft_data
+      - /app/music_files
     ports:
-      - "8000:8000"
+      - "8001:8000"
     networks:
-      - dispotify-network
+      dispotify-network:
+        aliases:
+          - dispotify-cluster
+    restart: unless-stopped
+
+  backend-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      SECRET_KEY: your-secret-key-change-in-production
+      ENVIRONMENT: development
+      NODE_ID: node-2
+      NODE_ADDRESS: backend-2
+      NODE_PORT: 8000
+      API_PORT: 8000
+      VIRTUAL_NODES: 150
+      REPLICATION_FACTOR: 2
+      UPLOAD_DIR: /app/music_files
+      RAFT_DATA_DIR: /app/raft_data
+      BOOTSTRAP_SERVICE: "dispotify-cluster"
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/requirements.txt:/app/requirements.txt
+    tmpfs:
+      - /app/raft_data
+      - /app/music_files
+    ports:
+      - "8002:8000"
+    networks:
+      dispotify-network:
+        aliases:
+          - dispotify-cluster
     restart: unless-stopped
 
   frontend:
@@ -27,19 +67,16 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     environment:
-      VITE_API_URL: http://localhost:8000/api/v1/
+      VITE_API_URL: http://localhost:8001/api/v1/  # Apunta a backend-1 para pruebas
     ports:
       - "3000:3000"
     depends_on:
       - backend-1
+      - backend-2
     networks:
       - dispotify-network
     restart: unless-stopped
 
-volumes:
-  backend_uploads:
-  db_data:
-
 networks:
   dispotify-network:
-    driver: bridge
+    driver: overlay  # Para simular Docker Swarm

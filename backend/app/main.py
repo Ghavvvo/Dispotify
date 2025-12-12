@@ -27,14 +27,7 @@ from app.distributed.discovery import (
     ServiceDiscovery,
     initialize_discovery
 )
-from app.distributed.locks import (
-    LockManager,
-    initialize_lock_manager
-)
-from app.distributed.events import (
-    EventQueue,
-    initialize_event_queue
-)
+
 from app.distributed.replication import (
     ReplicationManager,
     initialize_replication_manager
@@ -59,6 +52,8 @@ async def lifespan(app: FastAPI):
     )
     logger.info(f"Nodo local: {this_node.id} @ {this_node.address}:{this_node.port}")
 
+    cluster_nodes = []  # Start with no known peers, discovery will handle
+
     p2p_client = initialize_p2p_client(timeout=5.0, max_retries=3)
     await p2p_client.start()
     logger.info("P2P HTTP Client iniciado")
@@ -66,7 +61,7 @@ async def lifespan(app: FastAPI):
     raft_node = initialize_raft(
         node_id=settings.NODE_ID,
         node_info=this_node,
-        cluster_nodes=None,
+        cluster_nodes=cluster_nodes,
         data_dir=os.getenv("RAFT_DATA_DIR", "/data/raft"),
         election_timeout_min=float(os.getenv("RAFT_ELECTION_TIMEOUT_MIN", "1.5")),
         election_timeout_max=float(os.getenv("RAFT_ELECTION_TIMEOUT_MAX", "3.0")),
@@ -119,7 +114,11 @@ async def lifespan(app: FastAPI):
                             album=command.get("album"),
                             genero=command.get("genero"),
                             url=command.get("url"),
-                            file_size=command.get("file_size")
+                            file_size=command.get("file_size"),
+                            partition_id=command.get("partition_id"),
+                            epoch_number=command.get("epoch_number"),
+                            conflict_flag=command.get("conflict_flag"),
+                            merge_timestamp=command.get("merge_timestamp")
                         )
                         db.add(new_music)
                         db.commit()
@@ -171,20 +170,6 @@ async def lifespan(app: FastAPI):
 
     await discovery.start()
     logger.info("Service Discovery iniciado (modo dinamico)")
-
-    lock_manager = initialize_lock_manager(
-        raft_node=raft_node,
-        node_id=settings.NODE_ID
-    )
-    logger.info("Distributed Locks inicializado")
-
-    event_queue = initialize_event_queue(
-        raft_node=raft_node,
-        node_id=settings.NODE_ID,
-        use_raft=os.getenv("USE_RAFT_FOR_EVENTS", "true").lower() == "true"
-    )
-    await event_queue.start()
-    logger.info("Event Queue iniciado")
 
     replication_manager = initialize_replication_manager(
         raft_node=raft_node,
@@ -248,13 +233,15 @@ async def lifespan(app: FastAPI):
     logger.info(f"   - Raft term: {raft_node.current_term}")
     logger.info(f"   - Nodos conocidos: {discovery.get_cluster_size()}")
 
+    # Ensure data directory exists for SQLite
+    data_dir = Path("./data")
+    data_dir.mkdir(parents=True, exist_ok=True)
+
     init_db()
 
     app.state.p2p_client = p2p_client
     app.state.raft_node = raft_node
     app.state.discovery = discovery
-    app.state.lock_manager = lock_manager
-    app.state.event_queue = event_queue
     app.state.replication_manager = replication_manager
     app.state.hash_ring = hash_ring
     app.state.this_node = this_node
@@ -264,7 +251,6 @@ async def lifespan(app: FastAPI):
     logger.info(" Deteniendo sistema distribuido ...")
 
     await replication_manager.stop()
-    await event_queue.stop()
     await discovery.stop()
     await raft_node.stop()
     await p2p_client.stop()

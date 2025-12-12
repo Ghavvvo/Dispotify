@@ -6,11 +6,24 @@ from app.schemas.music import MusicCreate, MusicUpdate
 
 class MusicService:
     @staticmethod
-    def create_music(db: Session, music_data: MusicCreate, url: str, file_size: int) -> Music:
+    def create_music(
+            db: Session,
+            music_data: MusicCreate,
+            url: str,
+            file_size: int,
+            partition_id: str = None,
+            epoch_number: int = 0,
+            conflict_flag: str = None,
+            merge_timestamp: float = None
+    ) -> Music:
         db_music = Music(
             **music_data.model_dump(),
             url=url,
-            file_size=file_size
+            file_size=file_size,
+            partition_id=partition_id,
+            epoch_number=epoch_number,
+            conflict_flag=conflict_flag,
+            merge_timestamp=merge_timestamp
         )
         db.add(db_music)
         db.commit()

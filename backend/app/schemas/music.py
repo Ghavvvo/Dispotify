@@ -25,6 +25,10 @@ class MusicResponse(MusicBase):
     format: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    partition_id: Optional[str] = None
+    epoch_number: Optional[int] = None
+    conflict_flag: Optional[str] = None
+    merge_timestamp: Optional[float] = None
 
     model_config = ConfigDict(from_attributes=True)
 

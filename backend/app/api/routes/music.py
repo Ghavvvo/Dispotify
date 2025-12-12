@@ -9,6 +9,7 @@ from app.utils.file_handler import FileHandler
 from app.distributed.communication import get_p2p_client, P2PException
 from pathlib import Path
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,11 @@ async def upload_music(
                 "genero": genero,
                 "url": url,
                 "file_size": file_size,
-                "filename": filename
+                "filename": filename,
+                "partition_id": raft_node.partition_id,
+                "epoch_number": raft_node.epoch_number,
+                "conflict_flag": None,
+                "merge_timestamp": time.time()
             }
 
             success = await raft_node.submit_command(metadata_command, timeout=10.0)

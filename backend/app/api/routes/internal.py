@@ -3,7 +3,6 @@ import json
 import logging
 from pydantic import BaseModel
 from app.distributed.replication import get_replication_manager
-from app.distributed.events import get_event_queue
 from app.distributed.raft import get_raft_node
 from app.distributed.discovery import get_discovery
 from app.distributed.communication import NodeInfo
@@ -296,22 +295,6 @@ async def raft_request_vote(request: Request):
         logger.error(f"Error en request-vote: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.post("/internal/event")
-async def receive_broadcast_event(event: dict):
-    
-    try:
-        event_queue = get_event_queue()
-        await event_queue.handle_incoming_event(event)
-        
-        return {
-            "success": True,
-            "event_type": event.get("event_type")
-        }
-        
-    except Exception as e:
-        logger.error(f"Error recibiendo evento broadcast: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/internal/replicas")
