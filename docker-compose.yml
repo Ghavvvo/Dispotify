@@ -14,7 +14,8 @@ services:
       NODE_PORT: 8000
     volumes:
       - ./backend/app:/app/app
-      - backend_uploads:/app/uploads
+      - backend_uploads:/app/music_files
+      - db_data:/app/data
     ports:
       - "8000:8000"
     networks:
@@ -26,7 +27,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     environment:
-      VITE_API_URL: http://backend:8000/api/v1/
+      VITE_API_URL: http://localhost:8000/api/v1/
     ports:
       - "3000:3000"
     depends_on:
@@ -37,6 +38,7 @@ services:
 
 volumes:
   backend_uploads:
+  db_data:
 
 networks:
   dispotify-network:
