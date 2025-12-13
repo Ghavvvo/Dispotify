@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api.routes import internal, music
+from app.api.routes import internal, music, cluster
 from app.distributed.raft import get_raft_node
 from app.distributed.replication import get_replication_manager
 import logging
@@ -27,6 +27,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(internal.router)
+app.include_router(cluster.router)
 app.include_router(music.router, prefix=f"{settings.API_PREFIX}")
 
 @app.on_event("startup")

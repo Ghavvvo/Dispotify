@@ -30,6 +30,7 @@ class RaftNode:
         self.voted_for = None
         self.log = []
         self.commit_index = 0
+        self.last_applied = 0
         
         self.peers: Dict[str, NodeInfo] = {}
         self.reachable_peers: Set[str] = set()
