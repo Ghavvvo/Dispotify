@@ -1,21 +1,11 @@
 import { Music } from "lucide-react";
 import { usePlayer } from "../../../context/PlayerContext.tsx";
-import { getServerUrl } from "../../../api/api.ts";
-import { useEffect, useState } from "react";
+
+// Static files URL (points to the proxy)
+const STATIC_URL = import.meta.env.VITE_STATIC_URL || 'http://localhost:3001';
 
 export function Footer(){
     const { currentSong } = usePlayer();
-    const [serverUrl, setServerUrl] = useState<string>('');
-
-    useEffect(() => {
-        // Get server URL when component mounts or when currentSong changes
-        if (currentSong) {
-            getServerUrl().then(url => {
-                setServerUrl(url);
-                console.log('[Footer] Server URL:', url);
-            });
-        }
-    }, [currentSong]);
     return (
         <footer className={'flex bg-black w-full h-40 p-6 justify-between items-center gap-6'}>
             <div className={'flex items-center h-full'}>
@@ -49,7 +39,7 @@ export function Footer(){
                     <audio 
                         controls 
                         autoPlay
-                        src={serverUrl+currentSong.url}
+                        src={STATIC_URL+currentSong.url}
                         className={'w-full max-w-2xl'}
                     />
                 )}
