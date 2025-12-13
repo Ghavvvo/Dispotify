@@ -84,7 +84,7 @@ docker run -d \
   --name dispotify-frontend \
   --network dispotify-network \
   --publish 3000:3000 \
-  --env VITE_API_URL=http://backend-1:8000/api/v1/ \
+  --env VITE_API_URL=http://localhost:8001/api/v1/ \
   herrera/dispotify-frontend
 ```
 
