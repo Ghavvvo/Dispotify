@@ -45,20 +45,11 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_node_address() -> str:
-    try:
-        # Try to get IP via hostname resolution (works in Docker overlay)
-        ip = socket.gethostbyname(socket.gethostname())
-        logger.info(f"Resolved node address via hostname: {ip}")
-        return ip
-    except socket.gaierror as e:
-        logger.warning(f"Hostname resolution failed: {e}")
-        try:
-            ip = get_local_ip()
-            logger.info(f"Resolved node address via interface: {ip}")
-            return ip
-        except OSError as e2:
-            logger.warning(f"Interface IP failed: {e2}")
-            return "127.0.0.1"
+    # Use container name for communication in overlay network
+    node_id = os.getenv("NODE_ID", "node-1")
+    container_name = f"dispotify-backend-{node_id.split('-')[1]}"
+    logger.info(f"Resolved node address to container name: {container_name}")
+    return container_name
 
 
 @asynccontextmanager
