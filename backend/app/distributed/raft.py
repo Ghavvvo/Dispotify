@@ -7,6 +7,7 @@ import socket
 from enum import Enum
 from typing import List, Dict, Optional, Set
 from .communication import NodeInfo, CommunicationLayer
+from .state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class RaftNode:
         
         self.running = False
         self.bootstrap_service = os.getenv("BOOTSTRAP_SERVICE", "dispotify-cluster")
+        self.state_machine = StateMachine()
 
     @classmethod
     def get_instance(cls):
@@ -60,6 +62,7 @@ class RaftNode:
         logger.info(f"Starting RaftNode {self.node_id} on {self.address}:{self.port}")
         asyncio.create_task(self.run_loop())
         asyncio.create_task(self.discovery_loop())
+        asyncio.create_task(self.apply_loop())
 
     async def discovery_loop(self):
         while self.running:
@@ -87,6 +90,21 @@ class RaftNode:
                 except Exception:
                     pass
             await asyncio.sleep(5)
+
+    async def apply_loop(self):
+        while self.running:
+            if self.commit_index > self.last_applied:
+                self.last_applied += 1
+                # Ensure we don't go out of bounds if log was truncated
+                if self.last_applied < len(self.log):
+                    entry = self.log[self.last_applied]
+                    command = entry.get("command")
+                    if command:
+                        logger.info(f"Applying log index {self.last_applied}: {command.get('type')}")
+                        # Run in executor to avoid blocking async loop with DB ops
+                        await asyncio.to_thread(self.state_machine.apply, command)
+            else:
+                await asyncio.sleep(0.1)
 
     async def run_loop(self):
         while self.running:
@@ -400,7 +418,6 @@ class RaftNode:
         # If SOLO, commit immediately
         if self.state == RaftState.SOLO:
             self.commit_index = last_log_index
-            self.last_applied = last_log_index
             return True
             
         # Wait for replication
@@ -423,9 +440,6 @@ class RaftNode:
                  
                  if replication_count >= needed:
                      self.commit_index = last_log_index
-                     # In a real system, we would apply to state machine here asynchronously
-                     # For this implementation, we update last_applied immediately
-                     self.last_applied = last_log_index 
                      return True
             else:
                 # Lost leadership

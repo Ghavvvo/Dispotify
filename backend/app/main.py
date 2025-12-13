@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 # Ensure upload directory exists
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+# Ensure data directory exists for SQLite
+os.makedirs("./data", exist_ok=True)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
