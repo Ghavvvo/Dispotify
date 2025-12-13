@@ -42,6 +42,45 @@ async def get_node_status():
         logger.error(f"Error getting cluster status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/leader")
+async def get_cluster_leader():
+    """
+    Get the current leader information.
+    Returns the leader's host and port as seen by this node.
+    """
+    try:
+        raft_node = get_raft_node()
+        leader_id = raft_node.get_leader()
+        
+        if not leader_id:
+            raise HTTPException(status_code=503, detail="No leader elected yet")
+        
+        # If this node is the leader
+        if leader_id == raft_node.node_id:
+            return {
+                "leaderHost": raft_node.address,
+                "leaderPort": raft_node.port,
+                "leaderId": leader_id
+            }
+        
+        # Find leader in peers
+        if leader_id in raft_node.peers:
+            leader_node = raft_node.peers[leader_id]
+            return {
+                "leaderHost": leader_node.address,
+                "leaderPort": leader_node.port,
+                "leaderId": leader_id
+            }
+        
+        # Leader ID known but not in peers (shouldn't happen normally)
+        raise HTTPException(status_code=503, detail=f"Leader {leader_id} not found in peers")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting cluster leader: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/files")
 async def get_node_files():
     """

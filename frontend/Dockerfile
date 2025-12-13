@@ -5,9 +5,14 @@ RUN npm install -g pnpm
 RUN pnpm install
 COPY . .
 
-# Variable de entorno para la API
+# Variables de entorno para la API
 ARG VITE_API_URL
+ARG VITE_LEADER_RESOLVER_URL
+ARG VITE_USE_LEADER_RESOLVER
+
 ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_LEADER_RESOLVER_URL=${VITE_LEADER_RESOLVER_URL}
+ENV VITE_USE_LEADER_RESOLVER=${VITE_USE_LEADER_RESOLVER}
 
 EXPOSE 3000
 CMD ["pnpm", "run", "dev", "--host", "0.0.0.0", "--port", "3000"]
