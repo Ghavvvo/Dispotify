@@ -12,6 +12,7 @@
 - Cada contenedor que participe en RAFT debe conectarse con `--network-alias dispotify-cluster` para que el DNS interno resuelva el nombre usado por `BOOTSTRAP_SERVICE`.
 - `NODE_ADDRESS` es opcional; si no se especifica, el backend detecta automáticamente su IP overlay.
 - Volúmenes normales de Docker para persistencia.
+- Ejecuta los comandos `docker run` desde la raíz del proyecto Dispotify en cada host (para que `./backend` resuelva correctamente).
 
 ## Arquitectura
 - **Host 1 (Manager):** Ejecuta servicios de backend-1 y frontend.
@@ -29,7 +30,6 @@ docker push herrera/dispotify-backend
 docker push herrera/dispotify-frontend
 ```
 
-dock
 ## Paso 3: Ejecutar Contenedores con Docker Run
 En el host manager, ejecuta los siguientes comandos para crear los contenedores:
 
@@ -44,6 +44,7 @@ docker run -d \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node1:/app/raft_data \
   --volume music_files_node1:/app/music_files \
+  --volume ./backend:/app \
   herrera/dispotify-backend
 ```
 
@@ -58,6 +59,7 @@ docker run -d \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node2:/app/raft_data \
   --volume music_files_node2:/app/music_files \
+  --volume ./backend:/app \
   herrera/dispotify-backend
 ```
 
@@ -72,6 +74,7 @@ docker run -d \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node3:/app/raft_data \
   --volume music_files_node3:/app/music_files \
+  --volume ./backend:/app \
   herrera/dispotify-backend
 ```
 
