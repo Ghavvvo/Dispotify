@@ -34,6 +34,8 @@ class RaftNode:
         
         self.peers: Dict[str, NodeInfo] = {}
         self.reachable_peers: Set[str] = set()
+        self.match_index: Dict[str, int] = {}
+        self.next_index: Dict[str, int] = {}
         self.leader_id = None
         
         self.comm = CommunicationLayer()
@@ -160,14 +162,23 @@ class RaftNode:
 
     async def _send_heartbeat_to_peer(self, peer):
         try:
+            prev_log_index = self.next_index.get(peer.id, len(self.log)) - 1
+            prev_log_term = 0
+            if prev_log_index >= 0 and prev_log_index < len(self.log):
+                prev_log_term = self.log[prev_log_index]["term"]
+            
+            entries = []
+            if len(self.log) > prev_log_index + 1:
+                entries = self.log[prev_log_index + 1:]
+
             resp = await self.comm.send_rpc(
                 peer, "POST", "/raft/append-entries",
                 {
                     "term": self.current_term,
                     "leader_id": self.node_id,
-                    "prev_log_index": len(self.log) - 1,
-                    "prev_log_term": self.log[-1]["term"] if self.log else 0,
-                    "entries": [],
+                    "prev_log_index": prev_log_index,
+                    "prev_log_term": prev_log_term,
+                    "entries": entries,
                     "leader_commit": self.commit_index
                 }
             )
@@ -177,6 +188,16 @@ class RaftNode:
                     self.current_term = resp.get("term")
                     self.state = RaftState.FOLLOWER
                     self.voted_for = None
+                    return
+
+                if resp.get("success"):
+                    # Update match_index and next_index
+                    if entries:
+                        self.match_index[peer.id] = prev_log_index + len(entries)
+                        self.next_index[peer.id] = self.match_index[peer.id] + 1
+                else:
+                    # Decrement next_index and retry (simple backoff)
+                    self.next_index[peer.id] = max(0, self.next_index.get(peer.id, 1) - 1)
             else:
                 if peer.id in self.reachable_peers:
                     self.reachable_peers.remove(peer.id)
@@ -205,19 +226,51 @@ class RaftNode:
     async def handle_append_entries(self, data: dict):
         term = data.get("term")
         leader_id = data.get("leader_id")
+        prev_log_index = data.get("prev_log_index")
+        prev_log_term = data.get("prev_log_term")
+        entries = data.get("entries")
+        leader_commit = data.get("leader_commit")
         
-        if term >= self.current_term:
-            self.current_term = term
-            self.state = RaftState.FOLLOWER
-            self.leader_id = leader_id
-            self.last_heartbeat_received = time.time()
-            
-            # Add leader to peers if unknown (simple discovery)
-            # In real impl we need address/port in heartbeat
-            
-            return {"term": self.current_term, "success": True}
+        if term < self.current_term:
+            return {"term": self.current_term, "success": False}
+
+        self.current_term = term
+        self.state = RaftState.FOLLOWER
+        self.leader_id = leader_id
+        self.last_heartbeat_received = time.time()
         
-        return {"term": self.current_term, "success": False}
+        # Log consistency check
+        if prev_log_index >= 0:
+            if len(self.log) <= prev_log_index:
+                return {"term": self.current_term, "success": False}
+            if self.log[prev_log_index]["term"] != prev_log_term:
+                # Conflict: delete everything from here
+                self.log = self.log[:prev_log_index]
+                return {"term": self.current_term, "success": False}
+        
+        # Append new entries
+        if entries:
+            # If we have existing entries that conflict, delete them
+            # (Already handled partially above, but standard Raft says:)
+            # 3. If an existing entry conflicts with a new one (same index but different terms),
+            # delete the existing entry and all that follow it.
+            # 4. Append any new entries not already in the log
+            
+            current_idx = prev_log_index + 1
+            for entry in entries:
+                if len(self.log) > current_idx:
+                    if self.log[current_idx]["term"] != entry["term"]:
+                        self.log = self.log[:current_idx]
+                        self.log.append(entry)
+                else:
+                    self.log.append(entry)
+                current_idx += 1
+
+        # Update commit index
+        if leader_commit > self.commit_index:
+            self.commit_index = min(leader_commit, len(self.log) - 1)
+            
+        return {"term": self.current_term, "success": True}
 
     def add_peer(self, node: NodeInfo):
         self.peers[node.id] = node
@@ -261,9 +314,45 @@ class RaftNode:
         
         entry = {"term": self.current_term, "command": command}
         self.log.append(entry)
-        # In a real Raft, we wait for replication. 
-        # Here for simplicity/MVP, we assume success if we are leader.
-        return True
+        last_log_index = len(self.log) - 1
+        
+        # If SOLO, commit immediately
+        if self.state == RaftState.SOLO:
+            self.commit_index = last_log_index
+            self.last_applied = last_log_index
+            return True
+            
+        # Wait for replication
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            # Trigger heartbeat to speed up replication
+            await self.send_heartbeats()
+            
+            if self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER]:
+                 # Calculate replication count for the new entry
+                 # We count ourselves + peers that have matched this index
+                 replication_count = 1 # Self
+                 for peer_id in self.reachable_peers:
+                     if self.match_index.get(peer_id, -1) >= last_log_index:
+                         replication_count += 1
+                 
+                 # Calculate needed quorum based on reachable peers (Dynamic Quorum for Partition Tolerance)
+                 total_reachable = len(self.reachable_peers) + 1
+                 needed = (total_reachable // 2) + 1
+                 
+                 if replication_count >= needed:
+                     self.commit_index = last_log_index
+                     # In a real system, we would apply to state machine here asynchronously
+                     # For this implementation, we update last_applied immediately
+                     self.last_applied = last_log_index 
+                     return True
+            else:
+                # Lost leadership
+                return False
+            
+            await asyncio.sleep(0.1)
+            
+        return False
 
 def get_raft_node():
     return RaftNode.get_instance()
