@@ -92,6 +92,8 @@ docker run -d \
 - **Contenedores:** `docker ps`
 - **Logs:** `docker logs dispotify-backend-1`, etc.
 - **Health Checks:** Desde cualquier host, `curl http://<IP_HOST1>:8001/health`, etc.
+- **Estado del Cluster:** `curl http://<IP_HOST1>:8001/cluster/status` (Ver líder, término, nodos conectados)
+- **Archivos en Nodo:** `curl http://<IP_HOST1>:8001/cluster/files`
 
 ## Paso 5: Pruebas
 - Sube archivos via POST a `http://<IP_HOST1>:8001/api/v1/music/upload`.
