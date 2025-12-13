@@ -3,6 +3,7 @@ import logging
 import time
 import random
 import os
+import socket
 from enum import Enum
 from typing import List, Dict, Optional, Set
 from .communication import NodeInfo, CommunicationLayer
@@ -22,7 +23,10 @@ class RaftNode:
     def __init__(self):
         self.node_id = os.getenv("NODE_ID", f"node-{random.randint(1000,9999)}")
         # Address/Port will be updated when we know our IP or from env
-        self.address = os.getenv("NODE_ADDRESS", "0.0.0.0") 
+        try:
+            self.address = socket.gethostbyname(socket.gethostname())
+        except:
+            self.address = os.getenv("NODE_ADDRESS", "0.0.0.0") 
         self.port = int(os.getenv("PORT", "8000"))
         
         self.state = RaftState.FOLLOWER
@@ -159,6 +163,11 @@ class RaftNode:
         if self.state == RaftState.SOLO and len(self.reachable_peers) > 0:
             self.state = RaftState.LEADER
             logger.info(f"Peers reachable ({len(self.reachable_peers)}). Transitioning SOLO -> LEADER")
+            
+        # Auto-transition to SOLO if we lost all peers
+        if self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER] and len(self.reachable_peers) == 0:
+            self.state = RaftState.SOLO
+            logger.info("No peers reachable. Transitioning LEADER -> SOLO")
 
     async def _send_heartbeat_to_peer(self, peer):
         try:
@@ -201,9 +210,17 @@ class RaftNode:
             else:
                 if peer.id in self.reachable_peers:
                     self.reachable_peers.remove(peer.id)
+                # Remove from peers if unreachable (Dynamic Membership)
+                if peer.id in self.peers:
+                    del self.peers[peer.id]
+                    logger.info(f"Peer {peer.id} removed due to failure")
         except Exception:
             if peer.id in self.reachable_peers:
                 self.reachable_peers.remove(peer.id)
+            # Remove from peers if unreachable (Dynamic Membership)
+            if peer.id in self.peers:
+                del self.peers[peer.id]
+                logger.info(f"Peer {peer.id} removed due to failure")
 
     async def handle_request_vote(self, data: dict):
         term = data.get("term")
