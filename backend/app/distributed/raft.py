@@ -101,6 +101,12 @@ class RaftNode:
                 if now - self.last_heartbeat_received > self.election_timeout:
                     logger.info(f"Election timeout ({self.election_timeout}s). Starting election.")
                     await self.start_election()
+                    
+                # Check if leader is dead (if we are follower and haven't heard from leader)
+                # This is implicitly handled by election timeout, but if we have peers in our list
+                # and we timeout, we start election.
+                # If we are the ONLY node left (leader died and we are the only follower),
+                # start_election will fail to find peers and should transition to SOLO.
 
             await asyncio.sleep(0.1)
 
@@ -111,22 +117,22 @@ class RaftNode:
         self.election_timeout = random.uniform(3.0, 6.0)
         self.last_heartbeat_received = time.time()
         
-        # Calculate reachable quorum
-        reachable = [p for p in self.peers.values() if p.id in self.reachable_peers]
-        # Include self
-        total_votes_needed = (len(reachable) + 1) // 2 + 1
+        # Filter out unreachable peers before calculating quorum
+        # This is crucial: if leader died, it might still be in self.peers but unreachable
+        # We need to try to contact them or rely on previous reachability?
+        # Better: Try to contact everyone. If they don't reply, they are not reachable.
         
-        logger.info(f"Starting election Term {self.current_term}. Reachable: {len(reachable)}. Needed: {total_votes_needed}")
-
-        if len(reachable) == 0:
-            self.state = RaftState.SOLO
-            self.leader_id = self.node_id
-            logger.info("No peers reachable. Entering SOLO mode.")
-            return
-
+        # Calculate reachable quorum
+        # In standard Raft, quorum is based on configuration.
+        # Here we want dynamic quorum based on reachable nodes.
+        
+        # First, let's try to ping/vote request everyone.
+        reachable_count = 0
         votes = 1 # Vote for self
         
-        for peer in reachable:
+        peers_to_remove = []
+        
+        for peer_id, peer in self.peers.items():
             try:
                 resp = await self.comm.send_rpc(
                     peer, "POST", "/raft/request-vote",
@@ -137,13 +143,39 @@ class RaftNode:
                         "last_log_term": self.log[-1]["term"] if self.log else 0
                     }
                 )
-                if resp and resp.get("vote_granted"):
-                    votes += 1
+                if resp:
+                    reachable_count += 1
+                    if resp.get("vote_granted"):
+                        votes += 1
+                else:
+                    peers_to_remove.append(peer_id)
             except Exception:
-                pass
+                peers_to_remove.append(peer_id)
 
-        if votes >= total_votes_needed:
-            if len(self.peers) > 0 and len(reachable) < len(self.peers) // 2:
+        # Remove dead peers
+        for pid in peers_to_remove:
+            if pid in self.peers:
+                del self.peers[pid]
+            if pid in self.reachable_peers:
+                self.reachable_peers.remove(pid)
+            logger.info(f"Peer {pid} removed due to failure during election")
+
+        # If no one is reachable, go SOLO
+        if reachable_count == 0:
+            self.state = RaftState.SOLO
+            self.leader_id = self.node_id
+            logger.info("No peers reachable during election. Entering SOLO mode.")
+            return
+
+        # Calculate quorum based on WHO ANSWERED (Dynamic Quorum)
+        # +1 for self
+        total_participating = reachable_count + 1
+        needed = (total_participating // 2) + 1
+        
+        logger.info(f"Election Term {self.current_term}. Votes: {votes}/{total_participating} (Needed: {needed})")
+
+        if votes >= needed:
+            if len(self.peers) > 0 and reachable_count < len(self.peers) // 2:
                  self.state = RaftState.PARTITION_LEADER
             else:
                  self.state = RaftState.LEADER
@@ -180,6 +212,9 @@ class RaftNode:
             if len(self.log) > prev_log_index + 1:
                 entries = self.log[prev_log_index + 1:]
 
+            # Include known peers for membership sync
+            known_peers = [n.dict() for n in self.get_all_nodes()]
+
             resp = await self.comm.send_rpc(
                 peer, "POST", "/raft/append-entries",
                 {
@@ -188,7 +223,8 @@ class RaftNode:
                     "prev_log_index": prev_log_index,
                     "prev_log_term": prev_log_term,
                     "entries": entries,
-                    "leader_commit": self.commit_index
+                    "leader_commit": self.commit_index,
+                    "known_peers": known_peers
                 }
             )
             if resp:
@@ -256,6 +292,34 @@ class RaftNode:
         self.leader_id = leader_id
         self.last_heartbeat_received = time.time()
         
+        # Sync membership with leader
+        known_peers = data.get("known_peers", [])
+        if known_peers:
+            current_peer_ids = set(self.peers.keys())
+            new_peer_ids = set()
+            for p_data in known_peers:
+                # Skip self
+                if p_data.get("id") == self.node_id:
+                    continue
+                
+                p = NodeInfo(**p_data)
+                new_peer_ids.add(p.id)
+                
+                if p.id not in self.peers:
+                    self.add_peer(p)
+                    logger.info(f"Added peer {p.id} from leader sync")
+                elif self.peers[p.id].address != p.address:
+                    self.peers[p.id].address = p.address
+            
+            # Remove peers not in leader's list
+            for pid in current_peer_ids:
+                if pid not in new_peer_ids:
+                    if pid in self.peers:
+                        del self.peers[pid]
+                    if pid in self.reachable_peers:
+                        self.reachable_peers.remove(pid)
+                    logger.info(f"Removed peer {pid} (not in leader's list)")
+
         # Log consistency check
         if prev_log_index >= 0:
             if len(self.log) <= prev_log_index:
