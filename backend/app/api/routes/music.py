@@ -39,9 +39,13 @@ async def upload_music(
                 )
 
             leader_node = None
-            if hasattr(request.app.state, "discovery"):
-                discovery = request.app.state.discovery
-                leader_node = discovery.get_node_by_id(leader_id)
+            if leader_id in raft_node.peers:
+                leader_node = raft_node.peers[leader_id]
+            
+            # Fallback if leader is not in peers (should not happen if we know leader_id)
+            if not leader_node and leader_id == raft_node.node_id:
+                 # We are the leader? But is_leader() returned False.
+                 pass
 
             if not leader_node:
                 raise HTTPException(

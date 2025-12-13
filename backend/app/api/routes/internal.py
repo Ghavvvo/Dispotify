@@ -147,7 +147,7 @@ async def request_sync(sync_request: SyncRequest):
             port=sync_request.node_port
         )
 
-        node_in_cluster = any(n.id == sync_request.node_id for n in raft_node.cluster_nodes)
+        node_in_cluster = any(n.id == sync_request.node_id for n in raft_node.get_all_nodes())
 
         if not node_in_cluster:
             # Si el nodo no está en el cluster, enviamos comando add_node para replicarlo
@@ -163,9 +163,10 @@ async def request_sync(sync_request: SyncRequest):
             
             # También lo agregamos localmente temporalmente para permitir sync inmediata?
             # Mejor esperar a que se aplique el comando, pero para sync inmediata:
-            raft_node.add_cluster_node(requesting_node)
+            raft_node.add_peer(requesting_node)
         else:
-            asyncio.create_task(raft_node._sync_node(requesting_node))
+            # asyncio.create_task(raft_node._sync_node(requesting_node))
+            pass
 
         logger.info(
             f"Sync solicitada por {sync_request.node_id} "
@@ -177,7 +178,7 @@ async def request_sync(sync_request: SyncRequest):
             "message": f"Sincronización iniciada para {sync_request.node_id}",
             "leader_log_size": len(raft_node.log),
             "leader_term": raft_node.current_term,
-            "cluster_id": raft_node.cluster_id,
+            "cluster_id": "dispotify-cluster",
             "leader_id": raft_node.node_id
         }
 
