@@ -5,6 +5,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 import logging
 import os
+import socket
 
 from app.core.config import settings
 from app.core.database import engine, Base, SessionLocal, init_db
@@ -34,6 +35,7 @@ from app.distributed.replication import (
     initialize_replication_manager
 )
 from app.distributed.consistent_hash import ConsistentHashRing
+from app.distributed.netutils import get_local_ip
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,14 +44,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def resolve_node_address() -> str:
+    value = os.getenv("NODE_ADDRESS")
+    if value:
+        try:
+            socket.gethostbyname(value)
+            return value
+        except socket.gaierror:
+            logger.warning(f"NODE_ADDRESS {value} no es resolvible, usando IP overlay")
+    try:
+        return get_local_ip()
+    except OSError:
+        return value or "127.0.0.1"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Iniciando sistema distribuido con descubrimiento dinámico...")
 
+    node_address = resolve_node_address()
+    node_port = int(os.getenv("NODE_PORT", "8000"))
     this_node = NodeInfo(
         id=settings.NODE_ID,
-        address=os.getenv("NODE_ADDRESS", "localhost"),
-        port=int(os.getenv("NODE_PORT", "8000"))
+        address=node_address,
+        port=node_port
     )
     logger.info(f"Nodo local: {this_node.id} @ {this_node.address}:{this_node.port}")
 
