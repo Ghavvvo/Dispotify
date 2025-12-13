@@ -86,12 +86,12 @@ class RaftNode:
         while self.running:
             now = time.time()
             
-            if self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER]:
+            if self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER, RaftState.SOLO]:
                 if now - self.last_heartbeat_received >= 1.0: # Send heartbeat every 1s
                     await self.send_heartbeats()
                     self.last_heartbeat_received = now # Reset to avoid spamming if loop is fast
             
-            elif self.state in [RaftState.FOLLOWER, RaftState.CANDIDATE, RaftState.SOLO]:
+            elif self.state in [RaftState.FOLLOWER, RaftState.CANDIDATE]:
                 if now - self.last_heartbeat_received > self.election_timeout:
                     logger.info(f"Election timeout ({self.election_timeout}s). Starting election.")
                     await self.start_election()
@@ -152,6 +152,11 @@ class RaftNode:
         # Send AppendEntries to all peers
         for peer_id, peer in self.peers.items():
             asyncio.create_task(self._send_heartbeat_to_peer(peer))
+            
+        # Auto-transition from SOLO if we have peers
+        if self.state == RaftState.SOLO and len(self.reachable_peers) > 0:
+            self.state = RaftState.LEADER
+            logger.info(f"Peers reachable ({len(self.reachable_peers)}). Transitioning SOLO -> LEADER")
 
     async def _send_heartbeat_to_peer(self, peer):
         try:
