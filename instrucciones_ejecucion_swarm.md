@@ -38,6 +38,7 @@ En el host manager, ejecuta los siguientes comandos para crear los contenedores:
 docker run -d \
   --name dispotify-backend-1 \
   --network dispotify-network \
+  --network-alias dispotify-cluster \
   --publish 8001:8000 \
   --env NODE_ID=node-1 \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
@@ -51,9 +52,9 @@ docker run -d \
 docker run -d \
   --name dispotify-backend-2 \
   --network dispotify-network \
+  --network-alias dispotify-cluster \
   --publish 8002:8000 \
   --env NODE_ID=node-2 \
-  --env NODE_ADDRESS=backend-2 \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node2:/app/raft_data \
   --volume music_files_node2:/app/music_files \
@@ -65,9 +66,9 @@ docker run -d \
 docker run -d \
   --name dispotify-backend-3 \
   --network dispotify-network \
+  --network-alias dispotify-cluster \
   --publish 8003:8000 \
   --env NODE_ID=node-3 \
-  --env NODE_ADDRESS=backend-3 \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node3:/app/raft_data \
   --volume music_files_node3:/app/music_files \
