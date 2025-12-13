@@ -45,18 +45,10 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_node_address() -> str:
-    value = os.getenv("NODE_ADDRESS")
-    if value:
-        try:
-            socket.gethostbyname(value)
-            return value
-        except socket.gaierror:
-            logger.warning(f"NODE_ADDRESS {value} no es resolvible, usando IP overlay")
     try:
         return get_local_ip()
     except OSError:
-        return value or "127.0.0.1"
-
+        return "127.0.0.1"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

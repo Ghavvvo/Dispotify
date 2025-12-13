@@ -323,39 +323,3 @@ async def list_local_replicas():
     except Exception as e:
         logger.error(f"Error listando réplicas locales: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/raft/request-vote")
-async def raft_request_vote(request: dict):
-    
-    try:
-        from app.distributed.raft import get_raft_node
-
-        raft_node = get_raft_node()
-
-        
-        response = await raft_node.handle_request_vote(request)
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Error en RequestVote RPC: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/raft/append-entries")
-async def raft_append_entries(request: dict):
-    
-    try:
-        from app.distributed.raft import get_raft_node
-
-        raft_node = get_raft_node()
-
-        
-        response = await raft_node.handle_append_entries(request)
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Error en AppendEntries RPC: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
