@@ -1,9 +1,7 @@
 import os
 import hashlib
 import logging
-import shutil
 from pathlib import Path
-from typing import Dict
 import aiofiles
 
 logger = logging.getLogger(__name__)
@@ -25,7 +23,7 @@ class ReplicationManager:
     async def receive_file(self, file_data: bytes, metadata: dict):
         file_id = metadata.get("file_id")
         # Ensure filename is safe
-        filename = f"{file_id}.mp3"
+        filename = file_id
         file_path = self.storage_path / filename
         
         async with aiofiles.open(file_path, "wb") as f:
