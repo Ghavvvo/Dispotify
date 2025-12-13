@@ -177,7 +177,8 @@ app.use('/api', createProxyMiddleware({
   changeOrigin: true,
   pathRewrite: (path, req) => {
     // Add trailing slash if missing for FastAPI compatibility
-    if (!path.endsWith('/') && !path.includes('.') && !path.includes('?')) {
+    // BUT NOT for upload endpoints or endpoints that already have trailing slash
+    if (!path.endsWith('/') && !path.includes('.') && !path.includes('?') && !path.includes('/upload')) {
       console.log(`[PATH REWRITE] Adding trailing slash: ${path} → ${path}/`);
       return path + '/';
     }
@@ -232,11 +233,15 @@ app.use('/api', createProxyMiddleware({
     console.error(`  URL: ${req.url}`);
     console.error(`  Error: ${err.message}`);
     console.error(`${'!'.repeat(100)}\n`);
-    res.status(503).json({
-      error: 'Service Unavailable',
-      message: 'Could not proxy request to leader',
-      details: err.message
-    });
+    
+    // Only send response if headers haven't been sent yet
+    if (!res.headersSent) {
+      res.status(503).json({
+        error: 'Service Unavailable',
+        message: 'Could not proxy request to leader',
+        details: err.message
+      });
+    }
   },
   onProxyRes: (proxyRes, req, res) => {
     const timestamp = new Date().toISOString();
