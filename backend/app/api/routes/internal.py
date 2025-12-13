@@ -4,7 +4,6 @@ import logging
 from pydantic import BaseModel
 from app.distributed.replication import get_replication_manager
 from app.distributed.raft import get_raft_node
-from app.distributed.discovery import get_discovery
 from app.distributed.communication import NodeInfo
 
 logger = logging.getLogger(__name__)
@@ -54,7 +53,7 @@ async def register_node(registration: NodeRegistration, request: Request):
         success = await raft_node.submit_command(command)
 
         if success:
-            all_nodes = get_discovery().get_all_nodes()
+            all_nodes = raft_node.get_all_nodes()
             return {
                 "success": True,
                 "message": f"Nodo {registration.node_id} registrado exitosamente",
@@ -93,10 +92,10 @@ async def health_check():
 async def get_cluster_info(request: Request):
     try:
         raft_node = get_raft_node()
-        discovery = get_discovery()
-
-        all_nodes = discovery.get_all_nodes()
-        alive_nodes = discovery.get_alive_nodes()
+        
+        all_nodes = raft_node.get_all_nodes()
+        alive_nodes = raft_node.get_alive_nodes()
+        alive_ids = {n.id for n in alive_nodes}
 
         return {
             "leader_id": raft_node.leader_id,
@@ -112,7 +111,7 @@ async def get_cluster_info(request: Request):
                     "id": n.id,
                     "address": n.address,
                     "port": n.port,
-                    "status": "alive" if n in alive_nodes else "dead"
+                    "status": "alive" if n.id in alive_ids else "dead"
                 }
                 for n in all_nodes
             ]
@@ -151,6 +150,19 @@ async def request_sync(sync_request: SyncRequest):
         node_in_cluster = any(n.id == sync_request.node_id for n in raft_node.cluster_nodes)
 
         if not node_in_cluster:
+            # Si el nodo no está en el cluster, enviamos comando add_node para replicarlo
+            logger.info(f"Nodo {sync_request.node_id} solicitando sync pero no está en cluster. Iniciando add_node.")
+            command = {
+                "type": "add_node",
+                "node_id": requesting_node.id,
+                "address": requesting_node.address,
+                "port": requesting_node.port
+            }
+            # No esperamos a que termine para no bloquear, pero iniciamos el proceso
+            asyncio.create_task(raft_node.submit_command(command))
+            
+            # También lo agregamos localmente temporalmente para permitir sync inmediata?
+            # Mejor esperar a que se aplique el comando, pero para sync inmediata:
             raft_node.add_cluster_node(requesting_node)
         else:
             asyncio.create_task(raft_node._sync_node(requesting_node))
@@ -164,7 +176,9 @@ async def request_sync(sync_request: SyncRequest):
             "success": True,
             "message": f"Sincronización iniciada para {sync_request.node_id}",
             "leader_log_size": len(raft_node.log),
-            "leader_term": raft_node.current_term
+            "leader_term": raft_node.current_term,
+            "cluster_id": raft_node.cluster_id,
+            "leader_id": raft_node.node_id
         }
 
     except Exception as e:

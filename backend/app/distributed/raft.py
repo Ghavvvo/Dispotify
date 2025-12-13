@@ -167,6 +167,18 @@ class RaftNode:
     def get_cluster_nodes(self) -> List[NodeInfo]:
         return self.cluster_nodes.copy()
 
+    def get_alive_nodes(self) -> List[NodeInfo]:
+        """Retorna lista de nodos considerados vivos (incluyendo este nodo)"""
+        alive = [self.node_info]
+        for node in self.cluster_nodes:
+            if node.id not in self._failed_nodes:
+                alive.append(node)
+        return alive
+
+    def get_all_nodes(self) -> List[NodeInfo]:
+        """Retorna todos los nodos conocidos del cluster"""
+        return [self.node_info] + self.cluster_nodes
+
     async def start(self):
 
         if self._running:
@@ -180,6 +192,14 @@ class RaftNode:
         await self._load_state()
         await self._load_log()
 
+        # Si no hay peers configurados, iniciar inmediatamente en modo SOLO
+        if not self.cluster_nodes:
+            self.operational_mode = OperationalMode.SOLO
+            self.partition_id = hashlib.sha256(self.node_id.encode()).hexdigest()[:16]
+            self.epoch_number += 1
+            self.state = NodeState.LEADER
+            self.leader_id = self.node_id
+            logger.info(f"Iniciando en modo SOLO (sin peers configurados)")
 
         self._election_task = asyncio.create_task(self._election_timer_loop())
         self._heartbeat_task = asyncio.create_task(self._heartbeat_sender_loop())
@@ -227,8 +247,11 @@ class RaftNode:
                 )
 
                 leader_id = response.get("leader_id")
+                cluster_id = response.get("cluster_id")
                 if leader_id:
                     self.leader_id = leader_id
+                    if cluster_id:
+                        self.cluster_id = cluster_id
                     self.last_heartbeat = time.time()
                     logger.info(f"Sync inicial: líder es {leader_id} (via {peer.id})")
 
@@ -367,7 +390,30 @@ class RaftNode:
                 await asyncio.sleep(1)
 
     async def _detect_partition_and_elect(self):
-        reachable_nodes = [n for n in self.cluster_nodes if n.id not in self._failed_nodes]
+        # Verificar conectividad real antes de declarar partición
+        reachable_nodes = []
+
+        async def check_node(node):
+            try:
+                # Usar un endpoint ligero para verificar conectividad
+                await self.p2p_client.call_rpc(node, "GET", "/internal/cluster-info", timeout=0.5, retries=0)
+                return node
+            except:
+                return None
+
+        if self.cluster_nodes:
+            tasks = [check_node(n) for n in self.cluster_nodes]
+            results = await asyncio.gather(*tasks)
+            reachable_nodes = [n for n in results if n is not None]
+
+        # Actualizar failed nodes
+        current_time = time.time()
+        reachable_ids = {n.id for n in reachable_nodes}
+        for node in self.cluster_nodes:
+            if node.id not in reachable_ids:
+                self._failed_nodes[node.id] = current_time
+            elif node.id in self._failed_nodes:
+                del self._failed_nodes[node.id]
 
         if not reachable_nodes:
             # Isolated node, go to SOLO
@@ -453,7 +499,6 @@ class RaftNode:
         self.leader_id = self.node_id
 
         self.operational_mode = OperationalMode.PARTITION_LEADER
-
 
         last_log_index = len(self.log) - 1
         for peer in self.cluster_nodes:
@@ -655,7 +700,6 @@ class RaftNode:
             if peer.id not in self._failed_nodes:
                 self._failed_nodes[peer.id] = time.time()
                 self.cluster_nodes = [n for n in self.cluster_nodes if n.id != peer.id]
-                logger.warning(f"Nodo {peer.id} marcado como caído y removido del cluster")
             logger.debug(f"Error enviando AppendEntries a {peer.id}: {e}")
 
     async def _step_down(self, new_term: int):
@@ -756,7 +800,6 @@ class RaftNode:
 
         if leader_term == self.current_term and self.leader_id != leader_id:
             self.leader_id = leader_id
-            self.state = NodeState.FOLLOWER
             logger.info(f"Reconociendo líder: {leader_id}")
 
         success = False
@@ -857,7 +900,6 @@ class RaftNode:
                 self.remove_cluster_node(node_id)
                 key = f"cluster:nodes:{node_id}"
                 self.state_machine.pop(key, None)
-                logger.info(f"Comando remove_node aplicado: {node_id}")
 
         elif cmd_type == "merge_logs":
             await self._apply_merge_logs(command)
@@ -958,7 +1000,6 @@ class RaftNode:
             self.partition_id = other_partition
             self.epoch_number = other_epoch
             self.operational_mode = OperationalMode.PARTITION_FOLLOWER
-            self.leader_id = other_leader
             await self._persist_state()
         elif other_epoch == self.epoch_number and self.is_leader():
             # Merge with equal epoch
