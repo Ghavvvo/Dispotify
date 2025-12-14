@@ -463,7 +463,16 @@ class RaftNode:
                 
                 # Send each file to the new peer
                 for song in all_songs:
+                    if not song.url:
+                        logger.warning(f"[SYNC] Song {song.nombre} has no URL, skipping file sync")
+                        continue
+                        
                     file_id = song.url.split('/')[-1]  # Extract file_id from URL
+                    
+                    if file_id == "null" or not file_id:
+                        logger.warning(f"[SYNC] Song {song.nombre} has invalid file_id '{file_id}' from url '{song.url}', skipping")
+                        continue
+                        
                     file_path = replication_manager.storage_path / file_id
                     
                     if file_path.exists():
@@ -600,11 +609,15 @@ class RaftNode:
                         songs_we_need = result.get("songs_you_need", [])
                         
                         logger.info(f"[MERGE] We need {len(files_we_need)} files and {len(songs_we_need)} songs from leader")
+                        if len(files_we_need) != len(songs_we_need):
+                            logger.warning(f"[MERGE] Mismatch between files needed ({len(files_we_need)}) and songs needed ({len(songs_we_need)}). This might indicate metadata sync issues.")
                         
                         # Step 4: Apply missing songs from leader to our database
+                        logger.info(f"[MERGE] Starting metadata synchronization for {len(songs_we_need)} songs")
                         for song_data in songs_we_need:
                             existing = db.query(Music).filter(Music.url == song_data["url"]).first()
                             if not existing:
+                                logger.info(f"[MERGE] Creating metadata for song: {song_data['nombre']} (URL: {song_data['url']})")
                                 from app.services.music_service import MusicService
                                 from app.schemas.music import MusicCreate
                                 
@@ -623,28 +636,35 @@ class RaftNode:
                                     partition_id=song_data.get("partition_id"),
                                     epoch_number=song_data.get("epoch_number")
                                 )
-                                logger.info(f"[MERGE] Added song from leader: {song_data['nombre']}")
+                                logger.info(f"[MERGE] Successfully added metadata for: {song_data['nombre']}")
+                            else:
+                                logger.info(f"[MERGE] Metadata already exists for: {song_data['nombre']} (skipping)")
                         
                         # Step 5: Request files we need from leader
+                        logger.info(f"[MERGE] Starting physical file synchronization for {len(files_we_need)} files")
                         for file_id in files_we_need:
+                            if file_id == "null" or not file_id:
+                                logger.error(f"[MERGE] Skipping invalid file_id '{file_id}'. This explains why physical file might be copied with null name but metadata failed.")
+                                continue
+                                
                             try:
                                 file_url = f"http://{leader_peer.address}:{leader_peer.port}/internal/file/{file_id}"
-                                logger.info(f"[MERGE] Requesting file {file_id} from leader")
+                                logger.info(f"[MERGE] Requesting physical file {file_id} from leader")
                                 
                                 file_resp = await client.get(file_url, timeout=60.0)
                                 if file_resp.status_code == 200:
                                     file_path = replication_manager.storage_path / file_id
                                     async with aiofiles.open(file_path, 'wb') as f:
                                         await f.write(file_resp.content)
-                                    logger.info(f"[MERGE] Downloaded file {file_id} from leader")
+                                    logger.info(f"[MERGE] Successfully downloaded physical file {file_id} from leader")
                                 else:
-                                    logger.warning(f"[MERGE] Failed to download {file_id}: status {file_resp.status_code}")
+                                    logger.warning(f"[MERGE] Failed to download {file_id}: status {file_resp.status_code}. Metadata exists but physical file missing on leader?")
                             except Exception as e:
                                 logger.error(f"[MERGE] Error downloading file {file_id}: {e}")
                         
                         # Step 6: Send files that the leader needs from us
                         files_to_send = result.get("files_we_need", [])
-                        logger.info(f"[MERGE] Leader needs {len(files_to_send)} files from us")
+                        logger.info(f"[MERGE] Leader needs {len(files_to_send)} files from us (Reverse Sync)")
                         
                         for file_id in files_to_send:
                             song = next((s for s in our_songs if file_id in s.url), None)

@@ -676,6 +676,10 @@ async def handle_bidirectional_partition_merge(merge_request: BidirectionalMerge
                 if url not in their_urls and url not in their_log_operations:
                     # This is a song we have that they don't
                     file_id = url.split('/')[-1]
+                    
+                    if file_id == "null" or not file_id:
+                        logger.warning(f"[MERGE_BIDIRECTIONAL] Suspicious file_id '{file_id}' derived from url '{url}'")
+                        
                     files_they_need.append(file_id)
                     
                     # Find the song in our database
@@ -691,7 +695,20 @@ async def handle_bidirectional_partition_merge(merge_request: BidirectionalMerge
                             "partition_id": song.partition_id,
                             "epoch_number": song.epoch_number
                         })
-                        logger.info(f"[MERGE_BIDIRECTIONAL] Their partition needs: {song.nombre}")
+                        logger.info(f"[MERGE_BIDIRECTIONAL] Their partition needs: {song.nombre} (found in DB)")
+                    else:
+                        # Fallback to command data if not in DB yet
+                        logger.warning(f"[MERGE_BIDIRECTIONAL] Song {url} not found in DB but exists in log. Using log data.")
+                        songs_they_need.append({
+                            "nombre": command.get("nombre"),
+                            "autor": command.get("autor"),
+                            "album": command.get("album"),
+                            "genero": command.get("genero"),
+                            "url": command.get("url"),
+                            "file_size": command.get("file_size"),
+                            "partition_id": command.get("partition_id"),
+                            "epoch_number": command.get("epoch_number")
+                        })
             
             # Step 5: Add songs we're missing to our database via Raft
             # This will replicate metadata to ALL nodes via Raft
@@ -755,14 +772,18 @@ async def handle_bidirectional_partition_merge(merge_request: BidirectionalMerge
                 ))
             
             logger.info(f"[MERGE_BIDIRECTIONAL] Merge complete. "
-                       f"Our partition needs {len(files_we_need)} files, "
-                       f"Their partition needs {len(files_they_need)} files")
+                       f"Our partition needs {len(files_we_need)} files (Leader needs), "
+                       f"Their partition needs {len(files_they_need)} files (Requester needs)")
+            
+            # Correct mapping of response keys:
+            # files_we_need: Files the Leader needs (Requester should send these)
+            # files_you_need: Files the Requester needs (Leader will provide these)
             
             return {
                 "success": True,
                 "message": "Bidirectional merge processed",
-                "files_we_need": files_they_need,  # Files the leader needs (they will send)
-                "files_you_need": files_we_need,   # Files the requester needs (we will provide)
+                "files_we_need": files_we_need,    # CORRECTED: Files Leader needs
+                "files_you_need": files_they_need, # CORRECTED: Files Requester needs
                 "songs_you_need": songs_they_need,  # Songs the requester needs
                 "songs_added": len(songs_we_need),
                 "merge_strategy": "raft_log_based_optimized",
