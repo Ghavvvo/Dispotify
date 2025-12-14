@@ -312,10 +312,32 @@ class RaftNode:
         if term < self.current_term:
             return {"term": self.current_term, "success": False}
 
+        # Detect partition merge scenario
+        was_partition_leader = self.state == RaftState.PARTITION_LEADER
+        was_solo = self.state == RaftState.SOLO
+        old_term = self.current_term
+        old_state = self.state
+        
         self.current_term = term
         self.state = RaftState.FOLLOWER
         self.leader_id = leader_id
         self.last_heartbeat_received = time.time()
+        
+        # Trigger merge if we were isolated (PARTITION_LEADER or SOLO) and now joining a leader
+        should_merge = False
+        merge_reason = ""
+        
+        if was_partition_leader and term > old_term:
+            should_merge = True
+            merge_reason = f"Was partition leader (term {old_term}), now joining leader {leader_id} (term {term})"
+        elif was_solo and term >= old_term:
+            # SOLO node joining any leader (even same term means we were isolated)
+            should_merge = True
+            merge_reason = f"Was SOLO (term {old_term}), now joining leader {leader_id} (term {term})"
+        
+        if should_merge:
+            logger.info(f"[MERGE] Detected partition merge. {merge_reason}")
+            asyncio.create_task(self._handle_partition_merge(leader_id))
         
         # Sync membership with leader
         known_peers = data.get("known_peers", [])
@@ -394,6 +416,174 @@ class RaftNode:
             self.next_index[node.id] = 0
         if node.id not in self.match_index:
             self.match_index[node.id] = -1
+        
+        # If we are leader, trigger immediate sync for the new peer
+        if self.is_leader():
+            asyncio.create_task(self._sync_new_peer(node))
+    
+    async def _sync_new_peer(self, peer: NodeInfo):
+        """Synchronize a newly connected peer with full history"""
+        logger.info(f"[SYNC] Starting full synchronization for new peer {peer.id}")
+        
+        try:
+            # Step 1: Send full log history via append_entries
+            # This will be handled automatically by the heartbeat mechanism
+            # since next_index[peer.id] = 0
+            
+            # Step 2: Send all music files
+            from .replication import get_replication_manager
+            from app.core.database import SessionLocal
+            from app.models.music import Music
+            
+            replication_manager = get_replication_manager()
+            db = SessionLocal()
+            
+            try:
+                # Get all songs from database
+                all_songs = db.query(Music).all()
+                logger.info(f"[SYNC] Found {len(all_songs)} songs to sync to {peer.id}")
+                
+                # Send each file to the new peer
+                for song in all_songs:
+                    file_id = song.url.split('/')[-1]  # Extract file_id from URL
+                    file_path = replication_manager.storage_path / file_id
+                    
+                    if file_path.exists():
+                        metadata = {
+                            "file_id": file_id,
+                            "nombre": song.nombre,
+                            "autor": song.autor,
+                            "album": song.album,
+                            "genero": song.genero,
+                            "url": song.url,
+                            "file_size": song.file_size
+                        }
+                        
+                        await self._send_file_to_peer(peer, file_path, metadata)
+                    else:
+                        logger.warning(f"[SYNC] File {file_id} not found locally for song {song.nombre}")
+                
+                logger.info(f"[SYNC] Completed full synchronization for peer {peer.id}")
+                
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"[SYNC] Error synchronizing peer {peer.id}: {e}", exc_info=True)
+    
+    async def _send_file_to_peer(self, peer: NodeInfo, file_path, metadata: dict):
+        """Send a single file to a peer"""
+        import httpx
+        import json
+        
+        try:
+            url = f"http://{peer.address}:{peer.port}/internal/replicate"
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                with open(file_path, 'rb') as f:
+                    files = {'file': f}
+                    data = {'metadata': json.dumps(metadata)}
+                    
+                    logger.info(f"[SYNC] Sending file {metadata['file_id']} ({metadata['nombre']}) to {peer.id}")
+                    resp = await client.post(url, files=files, data=data)
+                    
+                    if resp.status_code == 200:
+                        logger.info(f"[SYNC] Successfully sent {metadata['file_id']} to {peer.id}")
+                    else:
+                        logger.warning(f"[SYNC] Failed to send {metadata['file_id']} to {peer.id}: status {resp.status_code}")
+                        
+        except Exception as e:
+            logger.error(f"[SYNC] Error sending file to {peer.id}: {e}")
+    
+    async def _handle_partition_merge(self, new_leader_id: str):
+        """Handle merge when this partition joins another partition"""
+        logger.info(f"[MERGE] Starting partition merge process with leader {new_leader_id}")
+        
+        try:
+            import httpx
+            from app.core.database import SessionLocal
+            from app.models.music import Music
+            from .replication import get_replication_manager
+            
+            # Step 1: Send our partition's data to the new leader for merge
+            db = SessionLocal()
+            replication_manager = get_replication_manager()
+            
+            try:
+                # Get all songs from our partition
+                our_songs = db.query(Music).all()
+                logger.info(f"[MERGE] We have {len(our_songs)} songs to report to new leader")
+                
+                # Find the new leader's address
+                leader_peer = None
+                for peer in self.peers.values():
+                    if peer.id == new_leader_id:
+                        leader_peer = peer
+                        break
+                
+                if not leader_peer:
+                    logger.error(f"[MERGE] Could not find leader {new_leader_id} in peers")
+                    return
+                
+                # Send merge request to leader with our partition data
+                merge_data = {
+                    "node_id": self.node_id,
+                    "partition_songs": [
+                        {
+                            "nombre": song.nombre,
+                            "autor": song.autor,
+                            "album": song.album,
+                            "genero": song.genero,
+                            "url": song.url,
+                            "file_size": song.file_size,
+                            "partition_id": song.partition_id,
+                            "epoch_number": song.epoch_number,
+                            "created_at": song.created_at.isoformat() if song.created_at else None
+                        }
+                        for song in our_songs
+                    ]
+                }
+                
+                url = f"http://{leader_peer.address}:{leader_peer.port}/internal/partition-merge"
+                
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    logger.info(f"[MERGE] Sending merge request to leader {new_leader_id}")
+                    resp = await client.post(url, json=merge_data)
+                    
+                    if resp.status_code == 200:
+                        result = resp.json()
+                        logger.info(f"[MERGE] Merge request accepted by leader. Response: {result}")
+                        
+                        # Step 2: Send files that the leader needs
+                        files_to_send = result.get("files_needed", [])
+                        logger.info(f"[MERGE] Leader needs {len(files_to_send)} files from us")
+                        
+                        for file_id in files_to_send:
+                            # Find the song with this file
+                            song = next((s for s in our_songs if file_id in s.url), None)
+                            if song:
+                                file_path = replication_manager.storage_path / file_id
+                                if file_path.exists():
+                                    metadata = {
+                                        "file_id": file_id,
+                                        "nombre": song.nombre,
+                                        "autor": song.autor,
+                                        "album": song.album,
+                                        "genero": song.genero,
+                                        "url": song.url,
+                                        "file_size": song.file_size
+                                    }
+                                    await self._send_file_to_peer(leader_peer, file_path, metadata)
+                        
+                        logger.info(f"[MERGE] Partition merge completed successfully")
+                    else:
+                        logger.error(f"[MERGE] Merge request failed with status {resp.status_code}")
+                        
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"[MERGE] Error during partition merge: {e}", exc_info=True)
 
     def is_leader(self):
         return self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER, RaftState.SOLO]

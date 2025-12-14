@@ -338,3 +338,110 @@ async def list_local_replicas():
     except Exception as e:
         logger.error(f"Error listando réplicas locales: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class PartitionMergeRequest(BaseModel):
+    node_id: str
+    partition_songs: list
+
+
+@router.post("/internal/partition-merge")
+async def handle_partition_merge(merge_request: PartitionMergeRequest):
+    """
+    Handle partition merge when two partitions reconnect.
+    The leader receives data from the other partition and decides which files to keep.
+    """
+    try:
+        from app.core.database import SessionLocal
+        from app.models.music import Music
+        from app.schemas.music import MusicCreate
+        from app.services.music_service import MusicService
+        import time
+        
+        raft_node = get_raft_node()
+        
+        if not raft_node.is_leader():
+            raise HTTPException(
+                status_code=400,
+                detail="Only the leader can handle partition merges"
+            )
+        
+        logger.info(f"[MERGE] Received merge request from {merge_request.node_id} with {len(merge_request.partition_songs)} songs")
+        
+        db = SessionLocal()
+        files_needed = []
+        songs_to_add = []
+        
+        try:
+            # Get our current songs
+            our_songs = db.query(Music).all()
+            our_urls = {song.url for song in our_songs}
+            
+            logger.info(f"[MERGE] We have {len(our_songs)} songs, comparing with incoming partition")
+            
+            # Process each song from the other partition
+            for song_data in merge_request.partition_songs:
+                url = song_data.get("url")
+                
+                # Check if we already have this song
+                existing = db.query(Music).filter(Music.url == url).first()
+                
+                if not existing:
+                    # New song from the other partition - we need to add it
+                    logger.info(f"[MERGE] New song from partition: {song_data.get('nombre')}")
+                    
+                    # Extract file_id from URL
+                    file_id = url.split('/')[-1]
+                    files_needed.append(file_id)
+                    
+                    # Prepare to add this song via Raft log
+                    command = {
+                        "type": "create_music",
+                        "nombre": song_data.get("nombre"),
+                        "autor": song_data.get("autor"),
+                        "album": song_data.get("album"),
+                        "genero": song_data.get("genero"),
+                        "url": url,
+                        "file_size": song_data.get("file_size"),
+                        "partition_id": song_data.get("partition_id"),
+                        "epoch_number": song_data.get("epoch_number"),
+                        "conflict_flag": False,
+                        "merge_timestamp": time.time()
+                    }
+                    songs_to_add.append(command)
+                    
+                else:
+                    # Song exists - check for conflicts
+                    # If partition_id or epoch_number differ, mark as potential conflict
+                    if (existing.partition_id != song_data.get("partition_id") or 
+                        existing.epoch_number != song_data.get("epoch_number")):
+                        logger.warning(
+                            f"[MERGE] Conflict detected for song {song_data.get('nombre')}: "
+                            f"our partition_id={existing.partition_id}, their partition_id={song_data.get('partition_id')}"
+                        )
+                        # For now, we keep our version (leader wins)
+                        # In a more sophisticated system, we could use vector clocks or timestamps
+            
+            # Submit all new songs via Raft
+            logger.info(f"[MERGE] Adding {len(songs_to_add)} new songs from partition merge")
+            for command in songs_to_add:
+                success = await raft_node.submit_command(command, timeout=15.0)
+                if not success:
+                    logger.error(f"[MERGE] Failed to replicate song {command['nombre']}")
+            
+            logger.info(f"[MERGE] Merge processing complete. Requesting {len(files_needed)} files")
+            
+            return {
+                "success": True,
+                "message": f"Merge processed. Added {len(songs_to_add)} songs",
+                "files_needed": files_needed,
+                "songs_added": len(songs_to_add),
+                "conflicts_detected": 0  # Could track this if needed
+            }
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"[MERGE] Error handling partition merge: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
