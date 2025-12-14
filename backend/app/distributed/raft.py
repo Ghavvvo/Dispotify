@@ -94,6 +94,9 @@ class RaftNode:
     async def apply_loop(self):
         while self.running:
             if self.commit_index > self.last_applied:
+                # Increment last_applied first to get the correct index
+                self.last_applied += 1
+                
                 # Ensure we don't go out of bounds if log was truncated
                 if self.last_applied < len(self.log):
                     entry = self.log[self.last_applied]
@@ -104,9 +107,9 @@ class RaftNode:
                         await asyncio.to_thread(self.state_machine.apply, command)
                     else:
                         logger.warning(f"[APPLY] Log entry {self.last_applied} has no command")
-                    self.last_applied += 1
                 else:
                     logger.warning(f"[APPLY] last_applied={self.last_applied} >= log length={len(self.log)}")
+                    # Adjust last_applied back if we went out of bounds
                     self.last_applied = len(self.log) - 1
             else:
                 await asyncio.sleep(0.1)
