@@ -26,10 +26,8 @@ Construye y sube las imágenes a un registry (e.g., Docker Hub):
 # En el host manager
 docker build -t herrera/dispotify-backend ./backend
 docker build -t herrera/dispotify-frontend ./frontend
-docker build -t herrera/dispotify-leader-proxy ./leader-resolver
 docker push herrera/dispotify-backend
 docker push herrera/dispotify-frontend
-docker push herrera/dispotify-leader-proxy
 ```
 
 ## Paso 3: Ejecutar Contenedores con Docker Run
@@ -80,28 +78,42 @@ docker run -d \
   herrera/dispotify-backend
 ```
 
-### Leader Proxy (en Host 1)
-Proxy inteligente que intercepta peticiones y las redirige automáticamente al líder actual:
+### Frontend con Leader Proxy integrado (en Host 1)
+El frontend ahora incluye el proxy leader-resolver en el mismo contenedor:
 ```bash
 docker run -d \
-  --name dispotify-leader-proxy \
+  --name dispotify-frontend \
   --network dispotify-network \
-  --publish 3001:3000 \
+  --publish 3000:3000 \
+  --publish 3001:3001 \
+  --env VITE_API_URL=http://localhost:3001/api/v1/ \
+  --env VITE_STATIC_URL=http://localhost:3001 \
   --env CLUSTER_DNS_NAME=dispotify-cluster \
   --env BACKEND_PORT=8000 \
   --env LEADER_ENDPOINT=/cluster/leader \
+  --env SERVICE_PORT=3001 \
   --env LEADER_CACHE_TTL=5000 \
-  herrera/dispotify-leader-proxy
+  herrera/dispotify-frontend
 ```
 
-**Variables de entorno del Leader Proxy:**
+**Variables de entorno del Frontend:**
+| Variable | Default | Descripción |
+|----------|---------|-------------|
+| `VITE_API_URL` | - | URL de la API (apunta al proxy interno) |
+| `VITE_STATIC_URL` | - | URL para archivos estáticos |
+
+**Variables de entorno del Leader Proxy (integrado):**
 | Variable | Default | Descripción |
 |----------|---------|-------------|
 | `CLUSTER_DNS_NAME` | `dispotify-cluster` | Nombre DNS/alias de red de los backends |
 | `BACKEND_PORT` | `8000` | Puerto interno donde escuchan los backends |
 | `LEADER_ENDPOINT` | `/cluster/leader` | Endpoint que devuelve info del líder |
-| `SERVICE_PORT` | `3000` | Puerto donde escucha el proxy |
+| `SERVICE_PORT` | `3001` | Puerto donde escucha el proxy |
 | `LEADER_CACHE_TTL` | `5000` | TTL del caché del líder en ms |
+
+**Puertos expuestos:**
+- `3000` → Frontend (Vite)
+- `3001` → Leader Proxy (integrado en el mismo contenedor)
 
 **Endpoints del Proxy:**
 - `/api/*` → Redirige al líder automáticamente
@@ -109,26 +121,15 @@ docker run -d \
 - `/health` → Health check del proxy
 - `/cluster/leader` → Info del líder (debugging)
 
-### Frontend (en Host 1)
-```bash
-docker run -d \
-  --name dispotify-frontend \
-  --network dispotify-network \
-  --publish 3000:3000 \
-  --env VITE_API_URL=http://localhost:3001/api/v1/ \
-  --env VITE_STATIC_URL=http://localhost:3001 \
-  herrera/dispotify-frontend
-```
-
-**Nota:** El frontend apunta al Leader Proxy, que se encarga de redirigir automáticamente todas las peticiones al líder actual del clúster.
+**Nota:** El frontend apunta al Leader Proxy interno (puerto 3001), que se encarga de redirigir automáticamente todas las peticiones al líder actual del clúster.
 
 ## Paso 4: Verificar Despliegue
 - **Contenedores:** `docker ps`
-- **Logs:** `docker logs dispotify-backend-1`, `docker logs dispotify-leader-resolver`, etc.
+- **Logs:** `docker logs dispotify-backend-1`, `docker logs dispotify-frontend`, etc.
 - **Health Checks:** Desde cualquier host, `curl http://<IP_HOST1>:8001/health`, etc.
 - **Estado del Cluster:** `curl http://<IP_HOST1>:8001/cluster/status` (Ver líder, término, nodos conectados)
 - **Archivos en Nodo:** `curl http://<IP_HOST1>:8001/cluster/files`
-- **Leader Resolver:** `curl http://<IP_HOST1>:3001/cluster/leader` (Obtener líder actual del clúster)
+- **Leader Proxy (integrado en frontend):** `curl http://<IP_HOST1>:3001/cluster/leader` (Obtener líder actual del clúster)
 
 ## Paso 5: Pruebas
 - Sube archivos via POST a `http://<IP_HOST1>:8001/api/v1/music/upload`.
@@ -137,7 +138,7 @@ docker run -d \
 
 ## Limpieza
 ```bash
-docker rm -f dispotify-backend-1 dispotify-backend-2 dispotify-backend-3 dispotify-frontend dispotify-leader-resolver
+docker rm -f dispotify-backend-1 dispotify-backend-2 dispotify-backend-3 dispotify-frontend
 docker network rm dispotify-network
 ```
 
