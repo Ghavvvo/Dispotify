@@ -175,6 +175,10 @@ async def upload_music(
 async def list_music(
         skip: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=100),
+        q: Optional[str] = Query(None, description="Búsqueda general por nombre, autor o álbum"),
+        genero: Optional[str] = Query(None, description="Filtrar por género"),
+        autor: Optional[str] = Query(None, description="Filtrar por autor"),
+        album: Optional[str] = Query(None, description="Filtrar por álbum"),
         db: Session = Depends(get_db),
         request: Request = None
 ):
@@ -193,6 +197,11 @@ async def list_music(
                 f"(commit={read_status['commit_index']}, applied={read_status['last_applied']})"
             )
 
+    # Si hay algún filtro activo, usar búsqueda filtrada
+    if q or genero or autor or album:
+        return MusicService.search_music(db, q or "", genero, autor, album)
+    
+    # Si no hay filtros, retornar todas las canciones
     return MusicService.get_all_music(db, skip, limit)
 
 @router.get("/{music_id}", response_model=MusicResponse)
