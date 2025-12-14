@@ -70,15 +70,15 @@ docker run -d \
 ### Backend-3 (en Host 2)
 ```bash
 docker run -d \
-  --name dispotify-backend-3 \
+  --name dispotify-backend-13 \
   --network dispotify-network \
   --network-alias dispotify-cluster \
   --publish 8003:8000 \
-  --env NODE_ID=node-3 \
+  --env NODE_ID=node-13 \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
-  --volume raft_data_node3:/app/raft_data \
-  --volume music_files_node3:/app/music_files \
-  --volume db_data_node3:/app/data \
+  --volume raft_data_node13:/app/raft_data \
+  --volume music_files_node13:/app/music_files \
+  --volume db_data_node13:/app/data \
   --volume ./backend/app:/app/app \
   herrera/dispotify-backend
 ```
@@ -86,15 +86,15 @@ docker run -d \
 ### Backend-4 (en Host 4)
 ```bash
 docker run -d \
-  --name dispotify-backend-4 \
+  --name dispotify-backend-14 \
   --network dispotify-network \
   --network-alias dispotify-cluster \
   --publish 8004:8000 \
-  --env NODE_ID=node-4 \
+  --env NODE_ID=node-14 \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
-  --volume raft_data_node4:/app/raft_data \
-  --volume music_files_node4:/app/music_files \
-  --volume db_data_node4:/app/data \
+  --volume raft_data_node14:/app/raft_data \
+  --volume music_files_node14:/app/music_files \
+  --volume db_data_node14:/app/data \
   --volume ./backend/app:/app/app \
   herrera/dispotify-backend
 ```
@@ -117,6 +117,10 @@ docker run -d \
 
 ### Frontend con Leader Proxy integrado (en Host 1)
 El frontend ahora incluye el proxy leader-resolver en el mismo contenedor:
+
+**IMPORTANTE:** Para producción, NO montar volúmenes del código fuente. 
+Para desarrollo con hot-reload, puedes agregar los volúmenes comentados abajo.
+
 ```bash
 docker run -d \
   --name dispotify-frontend \
@@ -131,10 +135,15 @@ docker run -d \
   --env SERVICE_PORT=3001 \
   --env LEADER_CACHE_TTL=5000 \
   --volume ./frontend/src:/app/src \
-  --volume ./frontend/index.html:/app/index.html \
-  --volume ./frontend/vite.config.ts:/app/vite.config.ts \
-  --volume ./frontend/leader-resolver:/app/leader-resolver \
   herrera/dispotify-frontend
+
+```
+
+**Nota:** Si haces cambios en el código del frontend, debes reconstruir la imagen:
+```bash
+docker build -t herrera/dispotify-frontend ./frontend
+docker stop dispotify-frontend && docker rm dispotify-frontend
+# Luego ejecutar el comando docker run de nuevo
 ```
 
 

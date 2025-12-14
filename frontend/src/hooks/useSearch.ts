@@ -38,7 +38,7 @@ export const useSearch = () => {
             }
 
             const queryString = toQueryParams(params);
-            const response = await api.get(`music?${queryString}`);
+            const response = await api.get(`music/?${queryString}`);
             setResults(response);
             setIsSearching(false);
             return response;

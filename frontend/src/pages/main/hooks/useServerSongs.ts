@@ -12,7 +12,7 @@ export const useServerSongs = () => {
     
     const getSongs = () => {
         setIsGettingSongs(true)
-        api.get("music").then((resp) => {
+        api.get("music/").then((resp) => {
             setSongs(resp)
             setIsGettingSongs(false)
         }).catch((e) => {
