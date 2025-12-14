@@ -234,6 +234,11 @@ app.use('/api', createProxyMiddleware({
     console.error(`  Error: ${err.message}`);
     console.error(`${'!'.repeat(100)}\n`);
     
+    // Invalidate leader cache on error to force rediscovery
+    console.warn('⚠️ Invalidating leader cache due to proxy error');
+    cachedLeader = null;
+    lastLeaderCheck = 0;
+    
     // Only send response if headers haven't been sent yet
     if (!res.headersSent) {
       res.status(503).json({
@@ -294,6 +299,12 @@ app.use('/static', createProxyMiddleware({
   },
   onError: (err, req, res) => {
     console.error('[PROXY] Static file error:', err.message);
+    
+    // Invalidate leader cache on error to force rediscovery
+    console.warn('⚠️ Invalidating leader cache due to static file error');
+    cachedLeader = null;
+    lastLeaderCheck = 0;
+    
     res.status(503).send('Service Unavailable');
   }
 }));
