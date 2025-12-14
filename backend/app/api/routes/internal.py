@@ -371,6 +371,7 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
         db = SessionLocal()
         files_needed = []
         songs_to_add = []
+        files_to_replicate = []  # Track files that need to be replicated to other peers
         
         try:
             # Get our current songs
@@ -393,6 +394,15 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
                     # Extract file_id from URL
                     file_id = url.split('/')[-1]
                     files_needed.append(file_id)
+                    files_to_replicate.append({
+                        "file_id": file_id,
+                        "nombre": song_data.get("nombre"),
+                        "autor": song_data.get("autor"),
+                        "album": song_data.get("album"),
+                        "genero": song_data.get("genero"),
+                        "url": url,
+                        "file_size": song_data.get("file_size")
+                    })
                     
                     # Prepare to add this song via Raft log
                     command = {
@@ -429,6 +439,12 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
                 if not success:
                     logger.error(f"[MERGE] Failed to replicate song {command['nombre']}")
             
+            # Schedule replication of received files to other peers
+            # This will happen after the files are received from the merging partition
+            if files_to_replicate:
+                import asyncio
+                asyncio.create_task(_replicate_merge_files(files_to_replicate))
+            
             logger.info(f"[MERGE] Merge processing complete. Requesting {len(files_needed)} files")
             
             return {
@@ -444,4 +460,209 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
             
     except Exception as e:
         logger.error(f"[MERGE] Error handling partition merge: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _replicate_merge_files(files_metadata: list):
+    """
+    Replicate files received during partition merge to all other peers.
+    This runs as a background task after files are received.
+    """
+    import asyncio
+    from pathlib import Path
+    
+    # Wait a bit to ensure files are received
+    await asyncio.sleep(2)
+    
+    replication_manager = get_replication_manager()
+    raft_node = get_raft_node()
+    
+    logger.info(f"[MERGE_REPLICATION] Starting replication of {len(files_metadata)} merged files to peers")
+    
+    for file_meta in files_metadata:
+        file_id = file_meta["file_id"]
+        file_path = replication_manager.storage_path / file_id
+        
+        # Wait for file to be available (with timeout)
+        max_wait = 30  # seconds
+        waited = 0
+        while not file_path.exists() and waited < max_wait:
+            await asyncio.sleep(1)
+            waited += 1
+        
+        if file_path.exists():
+            logger.info(f"[MERGE_REPLICATION] Replicating merged file {file_id} ({file_meta['nombre']}) to peers")
+            try:
+                await replication_manager.replicate_file(
+                    file_id=file_id,
+                    file_path=file_path,
+                    metadata=file_meta
+                )
+                logger.info(f"[MERGE_REPLICATION] Successfully replicated {file_id} to peers")
+            except Exception as e:
+                logger.error(f"[MERGE_REPLICATION] Error replicating {file_id}: {e}", exc_info=True)
+        else:
+            logger.error(f"[MERGE_REPLICATION] File {file_id} not found after waiting {max_wait}s")
+
+
+class BidirectionalMergeRequest(BaseModel):
+    node_id: str
+    our_term: int
+    our_log: list
+    partition_songs: list
+
+
+@router.post("/internal/partition-merge-bidirectional")
+async def handle_bidirectional_partition_merge(merge_request: BidirectionalMergeRequest):
+    """
+    Handle bidirectional partition merge using Raft logs as source of truth.
+    Both partitions exchange their logs and determine what each needs from the other.
+    """
+    try:
+        from app.core.database import SessionLocal
+        from app.models.music import Music
+        import time
+        
+        raft_node = get_raft_node()
+        
+        if not raft_node.is_leader():
+            raise HTTPException(
+                status_code=400,
+                detail="Only the leader can handle partition merges"
+            )
+        
+        logger.info(f"[MERGE_BIDIRECTIONAL] Received merge from {merge_request.node_id}: "
+                   f"term={merge_request.our_term}, log_entries={len(merge_request.our_log)}, "
+                   f"songs={len(merge_request.partition_songs)}")
+        
+        db = SessionLocal()
+        
+        try:
+            # Step 1: Get our current state
+            our_songs = db.query(Music).all()
+            our_urls = {song.url for song in our_songs}
+            their_urls = {song["url"] for song in merge_request.partition_songs}
+            
+            logger.info(f"[MERGE_BIDIRECTIONAL] Our partition: {len(our_songs)} songs, "
+                       f"Their partition: {len(merge_request.partition_songs)} songs")
+            
+            # Step 2: Analyze logs to determine what operations each partition has
+            # Extract create_music commands from their log
+            their_log_operations = {}
+            for log_entry in merge_request.our_log:
+                command = log_entry.get("command")
+                if command and command.get("type") == "create_music":
+                    url = command.get("url")
+                    if url:
+                        their_log_operations[url] = command
+            
+            # Extract create_music commands from our log
+            our_log_operations = {}
+            for log_entry in raft_node.log:
+                command = log_entry.get("command")
+                if command and command.get("type") == "create_music":
+                    url = command.get("url")
+                    if url:
+                        our_log_operations[url] = command
+            
+            logger.info(f"[MERGE_BIDIRECTIONAL] Log analysis: "
+                       f"We have {len(our_log_operations)} create operations, "
+                       f"They have {len(their_log_operations)} create operations")
+            
+            # Step 3: Determine what WE need from THEM (based on their log)
+            files_we_need = []
+            songs_we_need = []
+            
+            for url, command in their_log_operations.items():
+                if url not in our_urls and url not in our_log_operations:
+                    # This is a song they have that we don't
+                    file_id = url.split('/')[-1]
+                    files_we_need.append(file_id)
+                    
+                    # Find the song data
+                    song_data = next((s for s in merge_request.partition_songs if s["url"] == url), None)
+                    if song_data:
+                        songs_we_need.append(song_data)
+                        logger.info(f"[MERGE_BIDIRECTIONAL] We need: {song_data['nombre']}")
+            
+            # Step 4: Determine what THEY need from US (based on our log)
+            files_they_need = []
+            songs_they_need = []
+            
+            for url, command in our_log_operations.items():
+                if url not in their_urls and url not in their_log_operations:
+                    # This is a song we have that they don't
+                    file_id = url.split('/')[-1]
+                    files_they_need.append(file_id)
+                    
+                    # Find the song in our database
+                    song = db.query(Music).filter(Music.url == url).first()
+                    if song:
+                        songs_they_need.append({
+                            "nombre": song.nombre,
+                            "autor": song.autor,
+                            "album": song.album,
+                            "genero": song.genero,
+                            "url": song.url,
+                            "file_size": song.file_size,
+                            "partition_id": song.partition_id,
+                            "epoch_number": song.epoch_number
+                        })
+                        logger.info(f"[MERGE_BIDIRECTIONAL] They need: {song.nombre}")
+            
+            # Step 5: Add songs we're missing to our database via Raft
+            logger.info(f"[MERGE_BIDIRECTIONAL] Adding {len(songs_we_need)} songs from their partition")
+            for song_data in songs_we_need:
+                command = {
+                    "type": "create_music",
+                    "nombre": song_data["nombre"],
+                    "autor": song_data["autor"],
+                    "album": song_data.get("album"),
+                    "genero": song_data.get("genero"),
+                    "url": song_data["url"],
+                    "file_size": song_data["file_size"],
+                    "partition_id": song_data.get("partition_id"),
+                    "epoch_number": song_data.get("epoch_number"),
+                    "conflict_flag": False,
+                    "merge_timestamp": time.time()
+                }
+                
+                success = await raft_node.submit_command(command, timeout=15.0)
+                if not success:
+                    logger.error(f"[MERGE_BIDIRECTIONAL] Failed to add song {song_data['nombre']}")
+            
+            # Step 6: Schedule replication of files we'll receive to other peers
+            if files_we_need:
+                import asyncio
+                asyncio.create_task(_replicate_merge_files([
+                    {
+                        "file_id": song["url"].split('/')[-1],
+                        "nombre": song["nombre"],
+                        "autor": song["autor"],
+                        "album": song.get("album"),
+                        "genero": song.get("genero"),
+                        "url": song["url"],
+                        "file_size": song["file_size"]
+                    }
+                    for song in songs_we_need
+                ]))
+            
+            logger.info(f"[MERGE_BIDIRECTIONAL] Merge complete. "
+                       f"We need {len(files_we_need)} files, they need {len(files_they_need)} files")
+            
+            return {
+                "success": True,
+                "message": "Bidirectional merge processed",
+                "files_we_need": files_they_need,  # Files the leader needs (they will send)
+                "files_you_need": files_we_need,   # Files the requester needs (we will provide)
+                "songs_you_need": songs_they_need,  # Songs the requester needs
+                "songs_added": len(songs_we_need),
+                "merge_strategy": "raft_log_based"
+            }
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"[MERGE_BIDIRECTIONAL] Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

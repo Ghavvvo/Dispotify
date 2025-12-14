@@ -4,6 +4,7 @@ import time
 import random
 import os
 import socket
+import aiofiles
 from enum import Enum
 from typing import List, Dict, Optional, Set
 from .communication import NodeInfo, CommunicationLayer
@@ -261,6 +262,11 @@ class RaftNode:
                     self.voted_for = None
                     return
 
+                # Check if peer was a partition leader - trigger merge from our side
+                if resp.get("was_partition_leader") and resp.get("merge_needed"):
+                    logger.info(f"[MERGE] Peer {peer.id} was partition leader (term {resp.get('old_term')}). Initiating merge from leader side.")
+                    asyncio.create_task(self._initiate_leader_side_merge(peer))
+
                 if resp.get("success"):
                     # Update match_index and next_index
                     if entries:
@@ -318,8 +324,10 @@ class RaftNode:
         # Detect partition merge scenario
         was_partition_leader = self.state == RaftState.PARTITION_LEADER
         was_solo = self.state == RaftState.SOLO
+        was_leader = self.is_leader()
         old_term = self.current_term
         old_state = self.state
+        old_leader_id = self.leader_id
         
         self.current_term = term
         self.state = RaftState.FOLLOWER
@@ -341,6 +349,13 @@ class RaftNode:
         if should_merge:
             logger.info(f"[MERGE] Detected partition merge. {merge_reason}")
             asyncio.create_task(self._handle_partition_merge(leader_id))
+        
+        # Return merge notification to the new leader if we were a leader
+        response = {"term": self.current_term, "success": False}
+        if was_leader and should_merge:
+            response["was_partition_leader"] = True
+            response["old_term"] = old_term
+            response["merge_needed"] = True
         
         # Sync membership with leader
         known_peers = data.get("known_peers", [])
@@ -498,9 +513,23 @@ class RaftNode:
         except Exception as e:
             logger.error(f"[SYNC] Error sending file to {peer.id}: {e}")
     
+    async def _initiate_leader_side_merge(self, peer: NodeInfo):
+        """
+        Initiated by the winning leader when it detects a peer was a partition leader.
+        This ensures the leader also pulls data from the former partition leader.
+        """
+        logger.info(f"[MERGE_LEADER] Initiating leader-side merge with former partition leader {peer.id}")
+        
+        # The peer will already be sending us their data via _handle_partition_merge
+        # But we need to ensure we also send them what they're missing
+        # This is handled automatically by the bidirectional endpoint
+        # We just need to wait a bit for their merge request to arrive
+        await asyncio.sleep(1)
+        logger.info(f"[MERGE_LEADER] Merge coordination with {peer.id} in progress via bidirectional endpoint")
+    
     async def _handle_partition_merge(self, new_leader_id: str):
-        """Handle merge when this partition joins another partition"""
-        logger.info(f"[MERGE] Starting partition merge process with leader {new_leader_id}")
+        """Handle bidirectional merge when this partition joins another partition"""
+        logger.info(f"[MERGE] Starting bidirectional partition merge with leader {new_leader_id}")
         
         try:
             import httpx
@@ -508,14 +537,21 @@ class RaftNode:
             from app.models.music import Music
             from .replication import get_replication_manager
             
-            # Step 1: Send our partition's data to the new leader for merge
             db = SessionLocal()
             replication_manager = get_replication_manager()
             
             try:
-                # Get all songs from our partition
+                # Step 1: Collect our partition's log and data
                 our_songs = db.query(Music).all()
-                logger.info(f"[MERGE] We have {len(our_songs)} songs to report to new leader")
+                our_log_entries = [
+                    {
+                        "term": entry.get("term"),
+                        "command": entry.get("command")
+                    }
+                    for entry in self.log
+                ]
+                
+                logger.info(f"[MERGE] Our partition: {len(our_songs)} songs, {len(our_log_entries)} log entries, term={self.current_term}")
                 
                 # Find the new leader's address
                 leader_peer = None
@@ -528,9 +564,11 @@ class RaftNode:
                     logger.error(f"[MERGE] Could not find leader {new_leader_id} in peers")
                     return
                 
-                # Send merge request to leader with our partition data
+                # Step 2: Send bidirectional merge request with our log and songs
                 merge_data = {
                     "node_id": self.node_id,
+                    "our_term": self.current_term,
+                    "our_log": our_log_entries,
                     "partition_songs": [
                         {
                             "nombre": song.nombre,
@@ -547,22 +585,68 @@ class RaftNode:
                     ]
                 }
                 
-                url = f"http://{leader_peer.address}:{leader_peer.port}/internal/partition-merge"
+                url = f"http://{leader_peer.address}:{leader_peer.port}/internal/partition-merge-bidirectional"
                 
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    logger.info(f"[MERGE] Sending merge request to leader {new_leader_id}")
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    logger.info(f"[MERGE] Sending bidirectional merge request to leader {new_leader_id}")
                     resp = await client.post(url, json=merge_data)
                     
                     if resp.status_code == 200:
                         result = resp.json()
-                        logger.info(f"[MERGE] Merge request accepted by leader. Response: {result}")
+                        logger.info(f"[MERGE] Merge response received from leader")
                         
-                        # Step 2: Send files that the leader needs
-                        files_to_send = result.get("files_needed", [])
+                        # Step 3: Process what we need from the leader
+                        files_we_need = result.get("files_you_need", [])
+                        songs_we_need = result.get("songs_you_need", [])
+                        
+                        logger.info(f"[MERGE] We need {len(files_we_need)} files and {len(songs_we_need)} songs from leader")
+                        
+                        # Step 4: Apply missing songs from leader to our database
+                        for song_data in songs_we_need:
+                            existing = db.query(Music).filter(Music.url == song_data["url"]).first()
+                            if not existing:
+                                from app.services.music_service import MusicService
+                                from app.schemas.music import MusicCreate
+                                
+                                music_data = MusicCreate(
+                                    nombre=song_data["nombre"],
+                                    autor=song_data["autor"],
+                                    album=song_data.get("album"),
+                                    genero=song_data.get("genero")
+                                )
+                                
+                                MusicService.create_music(
+                                    db,
+                                    music_data,
+                                    url=song_data["url"],
+                                    file_size=song_data["file_size"],
+                                    partition_id=song_data.get("partition_id"),
+                                    epoch_number=song_data.get("epoch_number")
+                                )
+                                logger.info(f"[MERGE] Added song from leader: {song_data['nombre']}")
+                        
+                        # Step 5: Request files we need from leader
+                        for file_id in files_we_need:
+                            try:
+                                file_url = f"http://{leader_peer.address}:{leader_peer.port}/internal/file/{file_id}"
+                                logger.info(f"[MERGE] Requesting file {file_id} from leader")
+                                
+                                file_resp = await client.get(file_url, timeout=60.0)
+                                if file_resp.status_code == 200:
+                                    file_path = replication_manager.storage_path / file_id
+                                    async with aiofiles.open(file_path, 'wb') as f:
+                                        await f.write(file_resp.content)
+                                    logger.info(f"[MERGE] Downloaded file {file_id} from leader")
+                                else:
+                                    logger.warning(f"[MERGE] Failed to download {file_id}: status {file_resp.status_code}")
+                            except Exception as e:
+                                logger.error(f"[MERGE] Error downloading file {file_id}: {e}")
+                        
+                        # Step 6: Send files that the leader needs from us
+                        files_to_send = result.get("files_we_need", [])
                         logger.info(f"[MERGE] Leader needs {len(files_to_send)} files from us")
                         
                         for file_id in files_to_send:
-                            # Find the song with this file
                             song = next((s for s in our_songs if file_id in s.url), None)
                             if song:
                                 file_path = replication_manager.storage_path / file_id
@@ -577,8 +661,9 @@ class RaftNode:
                                         "file_size": song.file_size
                                     }
                                     await self._send_file_to_peer(leader_peer, file_path, metadata)
+                                    logger.info(f"[MERGE] Sent file {file_id} to leader")
                         
-                        logger.info(f"[MERGE] Partition merge completed successfully")
+                        logger.info(f"[MERGE] Bidirectional partition merge completed successfully")
                     else:
                         logger.error(f"[MERGE] Merge request failed with status {resp.status_code}")
                         
