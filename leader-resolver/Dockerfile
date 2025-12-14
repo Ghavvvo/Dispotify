@@ -2,8 +2,10 @@ FROM node:18-alpine
 
 WORKDIR /app
 
+RUN npm install -g pnpm
+
 COPY package.json ./
-RUN npm install --production
+RUN pnpm install --prod
 
 COPY server.js ./
 

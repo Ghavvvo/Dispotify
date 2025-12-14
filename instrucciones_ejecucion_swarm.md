@@ -56,13 +56,13 @@ docker run -d \
   --name dispotify-backend-2 \
   --network dispotify-network \
   --network-alias dispotify-cluster \
-  --publish 8006:8006 \
+  --publish 8002:8000 \
   --env NODE_ID=node-2 \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node2:/app/raft_data \
   --volume music_files_node2:/app/music_files \
   --volume ./backend:/app \
-  adrian/dispotify-backend
+  herrera/dispotify-backend
 ```
 
 ### Backend-3 (en Host 2)
@@ -139,6 +139,7 @@ docker run -d \
 ```bash
 docker rm -f dispotify-backend-1 dispotify-backend-2 dispotify-backend-3 dispotify-frontend dispotify-leader-resolver
 docker network rm dispotify-network
+docker volume rm raft_data_node1 music_files_node1 raft_data_node2 music_files_node2 raft_data_node3 music_files_node3
 ```
 
 ## Notas

@@ -34,8 +34,8 @@ class RaftNode:
         self.current_term = 0
         self.voted_for = None
         self.log = []
-        self.commit_index = 0
-        self.last_applied = 0
+        self.commit_index = -1
+        self.last_applied = -1
         
         self.peers: Dict[str, NodeInfo] = {}
         self.reachable_peers: Set[str] = set()
@@ -94,15 +94,20 @@ class RaftNode:
     async def apply_loop(self):
         while self.running:
             if self.commit_index > self.last_applied:
-                self.last_applied += 1
                 # Ensure we don't go out of bounds if log was truncated
                 if self.last_applied < len(self.log):
                     entry = self.log[self.last_applied]
                     command = entry.get("command")
                     if command:
-                        logger.info(f"Applying log index {self.last_applied}: {command.get('type')}")
+                        logger.info(f"[APPLY] Applying log index {self.last_applied}: {command.get('type')} - {command.get('nombre', 'N/A')}")
                         # Run in executor to avoid blocking async loop with DB ops
                         await asyncio.to_thread(self.state_machine.apply, command)
+                    else:
+                        logger.warning(f"[APPLY] Log entry {self.last_applied} has no command")
+                    self.last_applied += 1
+                else:
+                    logger.warning(f"[APPLY] last_applied={self.last_applied} >= log length={len(self.log)}")
+                    self.last_applied = len(self.log) - 1
             else:
                 await asyncio.sleep(0.1)
 
@@ -302,6 +307,8 @@ class RaftNode:
         entries = data.get("entries")
         leader_commit = data.get("leader_commit")
         
+        logger.debug(f"[APPEND_ENTRIES] Received from {leader_id}: prev_log_index={prev_log_index}, entries={len(entries) if entries else 0}, leader_commit={leader_commit}, my_commit={self.commit_index}")
+        
         if term < self.current_term:
             return {"term": self.current_term, "success": False}
 
@@ -349,6 +356,7 @@ class RaftNode:
         
         # Append new entries
         if entries:
+            logger.info(f"[APPEND_ENTRIES] Received {len(entries)} entries from leader {leader_id}")
             # If we have existing entries that conflict, delete them
             # (Already handled partially above, but standard Raft says:)
             # 3. If an existing entry conflicts with a new one (same index but different terms),
@@ -364,16 +372,28 @@ class RaftNode:
                 else:
                     self.log.append(entry)
                 current_idx += 1
+            logger.info(f"[APPEND_ENTRIES] Log now has {len(self.log)} entries")
 
         # Update commit index
         if leader_commit > self.commit_index:
+            old_commit = self.commit_index
             self.commit_index = min(leader_commit, len(self.log) - 1)
+            logger.info(f"[APPEND_ENTRIES] Updated commit_index from {old_commit} to {self.commit_index}")
+        elif leader_commit >= 0 and len(self.log) > 0:
+            # Even if leader_commit is not greater, ensure we're at least at the right level
+            self.commit_index = min(leader_commit, len(self.log) - 1)
+            logger.info(f"[APPEND_ENTRIES] Set commit_index to {self.commit_index} (leader_commit={leader_commit}, log_len={len(self.log)})")
             
         return {"term": self.current_term, "success": True}
 
     def add_peer(self, node: NodeInfo):
         self.peers[node.id] = node
         self.reachable_peers.add(node.id)
+        # Initialize next_index for new peer to 0 (will send all log entries)
+        if node.id not in self.next_index:
+            self.next_index[node.id] = 0
+        if node.id not in self.match_index:
+            self.match_index[node.id] = -1
 
     def is_leader(self):
         return self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER, RaftState.SOLO]
