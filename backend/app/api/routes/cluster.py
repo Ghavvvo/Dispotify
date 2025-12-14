@@ -87,24 +87,53 @@ async def get_node_files():
     List all files stored locally on this node.
     """
     try:
+        from app.core.database import get_db
+        from app.models.music import Music
+        
         replication_manager = get_replication_manager()
         storage_path = replication_manager.storage_path
         
-        files = []
+        # Get physical files
+        physical_files = {}
         if storage_path.exists():
             for f in storage_path.iterdir():
                 if f.is_file():
-                    files.append({
+                    physical_files[f.name] = {
                         "filename": f.name,
                         "size": f.stat().st_size,
-                        "modified": f.stat().st_mtime
-                    })
+                        "modified": f.stat().st_mtime,
+                        "song_name": None
+                    }
+        
+        # Get metadata from database
+        db = next(get_db())
+        try:
+            songs = db.query(Music).all()
+            metadata_list = []
+            
+            for song in songs:
+                filename = song.url.split('/')[-1] if song.url else None
+                metadata_list.append({
+                    "id": song.id,
+                    "song_name": song.nombre,
+                    "author": song.autor,
+                    "filename": filename,
+                    "has_file": filename in physical_files if filename else False
+                })
+                
+                # Add song name to physical file if exists
+                if filename and filename in physical_files:
+                    physical_files[filename]["song_name"] = song.nombre
+        finally:
+            db.close()
         
         return {
             "node_id": replication_manager.node_id,
             "storage_path": str(storage_path),
-            "file_count": len(files),
-            "files": files
+            "physical_files_count": len(physical_files),
+            "metadata_count": len(metadata_list),
+            "physical_files": list(physical_files.values()),
+            "metadata": metadata_list
         }
     except Exception as e:
         logger.error(f"Error getting node files: {e}")

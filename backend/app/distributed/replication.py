@@ -22,7 +22,7 @@ class ReplicationManager:
 
     async def receive_file(self, file_data: bytes, metadata: dict):
         file_id = metadata.get("file_id")
-        # Ensure filename is safe
+        song_name = metadata.get("nombre", "unknown")
         filename = file_id
         file_path = self.storage_path / filename
         
@@ -31,7 +31,7 @@ class ReplicationManager:
             
         checksum = hashlib.md5(file_data).hexdigest()
         
-        logger.info(f"Stored file {file_id} at {file_path}")
+        logger.info(f"[REPLICATION] Stored file {file_id} ({song_name}) at {file_path}, size: {len(file_data)} bytes, checksum: {checksum}")
         
         return {
             "file_id": file_id,
@@ -46,6 +46,14 @@ class ReplicationManager:
         
         raft_node = get_raft_node()
         peers = raft_node.get_alive_nodes()
+        song_name = metadata.get("nombre", "unknown")
+        
+        if not file_path.exists():
+            logger.error(f"[REPLICATION] File {file_id} ({song_name}) does not exist at {file_path}")
+            return
+        
+        file_size = file_path.stat().st_size
+        logger.info(f"[REPLICATION] Starting replication of {file_id} ({song_name}), size: {file_size} bytes to {len(peers)} peers")
         
         metadata["file_id"] = file_id
         
@@ -54,24 +62,27 @@ class ReplicationManager:
                 if peer.id == self.node_id:
                     continue
                     
+                file_handle = None
                 try:
                     url = f"http://{peer.address}:{peer.port}/internal/replicate"
                     
-                    # Prepare multipart upload
-                    files = {'file': open(file_path, 'rb')}
+                    file_handle = open(file_path, 'rb')
+                    files = {'file': file_handle}
                     data = {'metadata': json.dumps(metadata)}
                     
-                    logger.info(f"Replicating {file_id} to {peer.id} at {url}")
-                    resp = await client.post(url, files=files, data=data, timeout=10.0)
-                    files['file'].close()
+                    logger.info(f"[REPLICATION] Sending {file_id} ({song_name}) to {peer.id} at {url}")
+                    resp = await client.post(url, files=files, data=data, timeout=30.0)
                     
                     if resp.status_code == 200:
-                        logger.info(f"Replication to {peer.id} successful")
+                        logger.info(f"[REPLICATION] Success to {peer.id} for {file_id} ({song_name})")
                     else:
-                        logger.warning(f"Replication to {peer.id} failed: {resp.status_code}")
+                        logger.warning(f"[REPLICATION] Failed to {peer.id} for {file_id}: status {resp.status_code}")
                         
                 except Exception as e:
-                    logger.error(f"Error replicating to {peer.id}: {e}")
+                    logger.error(f"[REPLICATION] Error sending to {peer.id} for {file_id}: {e}")
+                finally:
+                    if file_handle:
+                        file_handle.close()
 
 def get_replication_manager():
     return ReplicationManager.get_instance()
