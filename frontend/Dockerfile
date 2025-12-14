@@ -11,7 +11,7 @@ COPY . .
 
 # Install leader-resolver dependencies
 WORKDIR /app/leader-resolver
-RUN npm install
+RUN pnpm install
 
 # Back to app root
 WORKDIR /app

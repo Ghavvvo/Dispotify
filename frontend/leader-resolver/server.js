@@ -2,6 +2,7 @@ const express = require('express');
 const dns = require('dns').promises;
 const axios = require('axios');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const os = require('os');
 
 const app = express();
 
@@ -12,6 +13,26 @@ const LEADER_ENDPOINT = process.env.LEADER_ENDPOINT || '/cluster/leader';
 const SERVICE_PORT = parseInt(process.env.SERVICE_PORT, 10) || 3000;
 const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT, 10) || 3000;
 const LEADER_CACHE_TTL = parseInt(process.env.LEADER_CACHE_TTL, 10) || 5000;
+
+// Get proxy information
+const PROXY_HOSTNAME = os.hostname();
+const PROXY_IP = getProxyIP();
+
+/**
+ * Get the proxy's IP address
+ */
+function getProxyIP() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      // Skip internal and non-IPv4 addresses
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'unknown';
+}
 
 // Cache for leader information
 let cachedLeader = null;
@@ -252,6 +273,39 @@ app.use('/api', createProxyMiddleware({
     const timestamp = new Date().toISOString();
     const contentLength = proxyRes.headers['content-length'] || '?';
     
+    // Add proxy information headers
+    res.setHeader('X-Proxy-Hostname', PROXY_HOSTNAME);
+    res.setHeader('X-Proxy-IP', PROXY_IP);
+    res.setHeader('X-Proxy-Port', SERVICE_PORT.toString());
+    
+    // Preserve backend node headers (they come from the backend response)
+    if (proxyRes.headers['x-node-id']) {
+      res.setHeader('X-Backend-Node-ID', proxyRes.headers['x-node-id']);
+    }
+    if (proxyRes.headers['x-node-hostname']) {
+      res.setHeader('X-Backend-Node-Hostname', proxyRes.headers['x-node-hostname']);
+    }
+    if (proxyRes.headers['x-node-ip']) {
+      res.setHeader('X-Backend-Node-IP', proxyRes.headers['x-node-ip']);
+    }
+    if (proxyRes.headers['x-node-port']) {
+      res.setHeader('X-Backend-Node-Port', proxyRes.headers['x-node-port']);
+    }
+    
+    // Expose these headers to CORS
+    const existingExposeHeaders = res.getHeader('Access-Control-Expose-Headers') || '';
+    const newExposeHeaders = [
+      existingExposeHeaders,
+      'X-Proxy-Hostname',
+      'X-Proxy-IP',
+      'X-Proxy-Port',
+      'X-Backend-Node-ID',
+      'X-Backend-Node-Hostname',
+      'X-Backend-Node-IP',
+      'X-Backend-Node-Port'
+    ].filter(Boolean).join(', ');
+    res.setHeader('Access-Control-Expose-Headers', newExposeHeaders);
+    
     // Capture response body from backend
     let backendResponseBody = '';
     proxyRes.on('data', (chunk) => {
@@ -263,6 +317,8 @@ app.use('/api', createProxyMiddleware({
       console.log(`  Status: ${proxyRes.statusCode} ${proxyRes.statusMessage}`);
       console.log(`  Content-Type: ${proxyRes.headers['content-type'] || 'unknown'}`);
       console.log(`  Content-Length: ${contentLength} bytes`);
+      console.log(`  Backend Node ID: ${proxyRes.headers['x-node-id'] || 'unknown'}`);
+      console.log(`  Backend Node Hostname: ${proxyRes.headers['x-node-hostname'] || 'unknown'}`);
       
       // Try to parse and pretty print JSON
       try {
@@ -276,6 +332,8 @@ app.use('/api', createProxyMiddleware({
       
       console.log(`\n✅ RESPONSE TO FRONTEND`);
       console.log(`  Status: ${proxyRes.statusCode}`);
+      console.log(`  Proxy Hostname: ${PROXY_HOSTNAME}`);
+      console.log(`  Proxy IP: ${PROXY_IP}`);
       console.log(`  Same body as backend response`);
       console.log(`${'='.repeat(100)}\n`);
     });

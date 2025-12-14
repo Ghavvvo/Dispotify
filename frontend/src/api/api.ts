@@ -12,7 +12,17 @@ const post = (endpoint: string, body: any) => {
         method: "POST",
         body: body,
         ...(isFormData ? {} : { headers: { "Content-Type": "application/json" } })
-    }).then(res => res.json())
+    }).then(async res => {
+        const text = await res.text();
+        if (!res.ok) {
+            throw new Error(text || `HTTP error! status: ${res.status}`);
+        }
+        try {
+            return text ? JSON.parse(text) : {};
+        } catch (e) {
+            return text;
+        }
+    })
 }
 
 const put = (endpoint: string, body: any) => 

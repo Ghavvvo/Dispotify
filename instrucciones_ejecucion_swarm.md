@@ -31,7 +31,9 @@ docker push herrera/dispotify-frontend
 ```
 
 ## Paso 3: Ejecutar Contenedores con Docker Run
-En el host manager, ejecuta los siguientes comandos para crear los contenedores:
+
+**IMPORTANTE:** Para desarrollo, monta solo el código fuente (`./backend/app`), NO todo el directorio backend.
+Esto evita que las carpetas de datos (raft_data, music_files, data) se creen en tu PC.
 
 ### Backend-1 (en Host 1)
 ```bash
@@ -44,7 +46,8 @@ docker run -d \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node1:/app/raft_data \
   --volume music_files_node1:/app/music_files \
-  --volume ./backend:/app \
+  --volume db_data_node1:/app/data \
+  --volume ./backend/app:/app/app \
   herrera/dispotify-backend
 ```
 
@@ -59,7 +62,8 @@ docker run -d \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node2:/app/raft_data \
   --volume music_files_node2:/app/music_files \
-  --volume ./backend:/app \
+  --volume db_data_node2:/app/data \
+  --volume ./backend/app:/app/app \
   herrera/dispotify-backend
 ```
 
@@ -74,9 +78,42 @@ docker run -d \
   --env BOOTSTRAP_SERVICE=dispotify-cluster \
   --volume raft_data_node3:/app/raft_data \
   --volume music_files_node3:/app/music_files \
-  --volume ./backend:/app \
+  --volume db_data_node3:/app/data \
+  --volume ./backend/app:/app/app \
   herrera/dispotify-backend
 ```
+
+### Backend-4 (en Host 4)
+```bash
+docker run -d \
+  --name dispotify-backend-4 \
+  --network dispotify-network \
+  --network-alias dispotify-cluster \
+  --publish 8004:8000 \
+  --env NODE_ID=node-4 \
+  --env BOOTSTRAP_SERVICE=dispotify-cluster \
+  --volume raft_data_node4:/app/raft_data \
+  --volume music_files_node4:/app/music_files \
+  --volume db_data_node4:/app/data \
+  --volume ./backend/app:/app/app \
+  herrera/dispotify-backend
+```
+### Backend-5 (en Host 5)
+```bash
+docker run -d \
+  --name dispotify-backend-5 \
+  --network dispotify-network-2 \
+  --network-alias dispotify-cluster \
+  --publish 8005:8000 \
+  --env NODE_ID=node-5 \
+  --env BOOTSTRAP_SERVICE=dispotify-cluster \
+  --volume raft_data_node5:/app/raft_data \
+  --volume music_files_node5:/app/music_files \
+  --volume db_data_node5:/app/data \
+  --volume ./backend/app:/app/app \
+  herrera/dispotify-backend
+```
+
 
 ### Frontend con Leader Proxy integrado (en Host 1)
 El frontend ahora incluye el proxy leader-resolver en el mismo contenedor:
@@ -95,6 +132,8 @@ docker run -d \
   --env LEADER_CACHE_TTL=5000 \
   herrera/dispotify-frontend
 ```
+
+
 
 **Variables de entorno del Frontend:**
 | Variable | Default | Descripción |
