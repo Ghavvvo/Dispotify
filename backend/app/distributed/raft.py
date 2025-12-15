@@ -217,6 +217,26 @@ class RaftNode:
         else:
             self.state = RaftState.FOLLOWER
 
+    def update_commit_index(self):
+        # Calculate match_indices including self
+        match_indices = [len(self.log) - 1] # Leader has everything
+        for peer_id in self.peers:
+            match_indices.append(self.match_index.get(peer_id, -1))
+        
+        match_indices.sort(reverse=True)
+        
+        # N is the index that is replicated on majority
+        n = len(match_indices)
+        if n == 0: return
+        
+        N = match_indices[n // 2]
+        
+        if N > self.commit_index and N < len(self.log):
+            # Only commit entries from current term by counting replicas
+            if self.log[N]["term"] == self.current_term:
+                self.commit_index = N
+                logger.info(f"Leader commit_index updated to {self.commit_index}")
+
     async def send_heartbeats(self):
         # Send AppendEntries to all peers
         for peer_id, peer in self.peers.items():
@@ -276,6 +296,7 @@ class RaftNode:
                     if entries:
                         self.match_index[peer.id] = prev_log_index + len(entries)
                         self.next_index[peer.id] = self.match_index[peer.id] + 1
+                        self.update_commit_index()
                 else:
                     # Decrement next_index and retry (simple backoff)
                     self.next_index[peer.id] = max(0, self.next_index.get(peer.id, 1) - 1)
