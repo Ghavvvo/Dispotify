@@ -209,6 +209,10 @@ class RaftNode:
             
             self.leader_id = self.node_id
             logger.info(f"Won election! State: {self.state}")
+            
+            # NUEVO: Ejecutar flujo de sincronización del líder
+            asyncio.create_task(self._leader_synchronization_flow())
+            
             await self.send_heartbeats()
         else:
             self.state = RaftState.FOLLOWER
@@ -724,6 +728,245 @@ class RaftNode:
             "commit_index": self.commit_index,
             "last_applied": self.last_applied
         }
+
+    async def _leader_synchronization_flow(self):
+        """
+        Flujo de sincronización completo cuando un nodo se convierte en líder:
+        1. Solicitar listas de archivos de todos los nodos
+        2. Unificar todas las listas con la lista local del líder
+        3. Descargar todas las canciones faltantes al líder
+        4. Revisar las listas de cada seguidor
+        5. Enviar a cada seguidor las canciones que le falten
+        """
+        import httpx
+        from app.core.database import SessionLocal
+        from app.models.music import Music
+        from .replication import get_replication_manager
+        
+        # Esperar un poco para que el cluster se estabilice
+        await asyncio.sleep(2)
+        
+        # Verificar que seguimos siendo líder
+        if not self.is_leader():
+            logger.info("[LEADER_SYNC] Ya no somos líder, cancelando sincronización")
+            return
+        
+        logger.info("[LEADER_SYNC] ========================================")
+        logger.info("[LEADER_SYNC] Iniciando flujo de sincronización del líder")
+        logger.info("[LEADER_SYNC] ========================================")
+        
+        try:
+            replication_manager = get_replication_manager()
+            
+            # PASO 1: Solicitar listas de archivos de todos los nodos
+            logger.info("[LEADER_SYNC] PASO 1: Solicitando listas de archivos de todos los nodos")
+            node_file_lists = {}
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for peer_id in list(self.reachable_peers):
+                    if peer_id not in self.peers:
+                        continue
+                    
+                    peer = self.peers[peer_id]
+                    try:
+                        url = f"http://{peer.address}:{peer.port}/cluster/files"
+                        logger.info(f"[LEADER_SYNC] Solicitando lista de archivos a {peer_id}")
+                        resp = await client.get(url)
+                        
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            metadata = data.get("metadata", [])
+                            node_file_lists[peer_id] = metadata
+                            logger.info(f"[LEADER_SYNC] {peer_id} tiene {len(metadata)} canciones")
+                        else:
+                            logger.warning(f"[LEADER_SYNC] Error al obtener lista de {peer_id}: status {resp.status_code}")
+                    except Exception as e:
+                        logger.error(f"[LEADER_SYNC] Error al contactar {peer_id}: {e}")
+            
+            logger.info(f"[LEADER_SYNC] Listas recibidas de {len(node_file_lists)} nodos")
+            
+            # PASO 2: Unificar todas las listas con la lista local del líder
+            logger.info("[LEADER_SYNC] PASO 2: Unificando todas las listas de archivos")
+            
+            db = SessionLocal()
+            try:
+                # Obtener canciones locales
+                our_songs = db.query(Music).all()
+                our_songs_by_url = {song.url: song for song in our_songs if song.url}
+                logger.info(f"[LEADER_SYNC] Líder tiene {len(our_songs)} canciones locales")
+                
+                # Crear lista unificada
+                unified_songs = {}  # url -> {song_data, source_node}
+                
+                # Agregar canciones locales
+                for song in our_songs:
+                    if song.url:
+                        file_id = song.url.split('/')[-1]
+                        unified_songs[song.url] = {
+                            "nombre": song.nombre,
+                            "autor": song.autor,
+                            "album": song.album,
+                            "genero": song.genero,
+                            "url": song.url,
+                            "file_size": song.file_size,
+                            "file_id": file_id,
+                            "source_node": self.node_id
+                        }
+                
+                # Agregar canciones de los peers
+                for peer_id, songs in node_file_lists.items():
+                    for song_meta in songs:
+                        url = f"http://{self.address}:{self.port}/music/stream/{song_meta.get('filename')}"
+                        
+                        # Reconstruir URL correcta si es necesario
+                        if song_meta.get('filename'):
+                            # Usar el formato de URL estándar
+                            url = f"http://localhost:8000/music/stream/{song_meta.get('filename')}"
+                        
+                        if url not in unified_songs:
+                            unified_songs[url] = {
+                                "nombre": song_meta.get("song_name", "Unknown"),
+                                "autor": song_meta.get("author", "Unknown"),
+                                "album": None,
+                                "genero": None,
+                                "url": url,
+                                "file_size": song_meta.get("size"),
+                                "file_id": song_meta.get("filename"),
+                                "source_node": peer_id
+                            }
+                
+                logger.info(f"[LEADER_SYNC] Lista unificada contiene {len(unified_songs)} canciones únicas")
+                
+                # PASO 3: Descargar todas las canciones faltantes al líder
+                logger.info("[LEADER_SYNC] PASO 3: Descargando canciones faltantes al líder")
+                
+                songs_to_download = []
+                for url, song_data in unified_songs.items():
+                    if url not in our_songs_by_url:
+                        songs_to_download.append(song_data)
+                
+                logger.info(f"[LEADER_SYNC] Líder necesita descargar {len(songs_to_download)} canciones")
+                
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    for song_data in songs_to_download:
+                        source_node_id = song_data.get("source_node")
+                        file_id = song_data.get("file_id")
+                        
+                        if not file_id or file_id == "null":
+                            logger.warning(f"[LEADER_SYNC] Canción {song_data.get('nombre')} tiene file_id inválido, omitiendo")
+                            continue
+                        
+                        if source_node_id == self.node_id:
+                            continue
+                        
+                        if source_node_id not in self.peers:
+                            logger.warning(f"[LEADER_SYNC] Nodo origen {source_node_id} no disponible")
+                            continue
+                        
+                        source_peer = self.peers[source_node_id]
+                        
+                        try:
+                            file_url = f"http://{source_peer.address}:{source_peer.port}/internal/file/{file_id}"
+                            logger.info(f"[LEADER_SYNC] Descargando {song_data.get('nombre')} desde {source_node_id}")
+                            
+                            file_resp = await client.get(file_url, timeout=60.0)
+                            if file_resp.status_code == 200:
+                                # Guardar archivo físicamente
+                                file_path = replication_manager.storage_path / file_id
+                                async with aiofiles.open(file_path, 'wb') as f:
+                                    await f.write(file_resp.content)
+                                
+                                logger.info(f"[LEADER_SYNC] Archivo {file_id} guardado exitosamente")
+                                
+                                # Agregar metadatos via Raft
+                                command = {
+                                    "type": "create_music",
+                                    "nombre": song_data.get("nombre"),
+                                    "autor": song_data.get("autor"),
+                                    "album": song_data.get("album"),
+                                    "genero": song_data.get("genero"),
+                                    "url": f"http://localhost:8000/music/stream/{file_id}",
+                                    "file_size": song_data.get("file_size", len(file_resp.content))
+                                }
+                                
+                                success = await self.submit_command(command, timeout=15.0)
+                                if success:
+                                    logger.info(f"[LEADER_SYNC] Metadatos de {song_data.get('nombre')} replicados via Raft")
+                                else:
+                                    logger.error(f"[LEADER_SYNC] Fallo al replicar metadatos de {song_data.get('nombre')}")
+                            else:
+                                logger.warning(f"[LEADER_SYNC] Error al descargar {file_id}: status {file_resp.status_code}")
+                        except Exception as e:
+                            logger.error(f"[LEADER_SYNC] Error descargando {song_data.get('nombre')}: {e}")
+                
+                # Actualizar nuestra lista local después de las descargas
+                our_songs = db.query(Music).all()
+                our_songs_by_filename = {}
+                for song in our_songs:
+                    if song.url:
+                        file_id = song.url.split('/')[-1]
+                        our_songs_by_filename[file_id] = song
+                
+                logger.info(f"[LEADER_SYNC] Líder ahora tiene {len(our_songs)} canciones")
+                
+                # PASO 4 y 5: Revisar y sincronizar cada seguidor
+                logger.info("[LEADER_SYNC] PASO 4-5: Sincronizando seguidores")
+                
+                for peer_id in list(self.reachable_peers):
+                    if peer_id not in self.peers:
+                        continue
+                    
+                    peer = self.peers[peer_id]
+                    peer_songs = node_file_lists.get(peer_id, [])
+                    peer_filenames = {song.get("filename") for song in peer_songs if song.get("filename")}
+                    
+                    logger.info(f"[LEADER_SYNC] Revisando seguidor {peer_id} ({len(peer_filenames)} canciones)")
+                    
+                    # Determinar qué canciones le faltan a este peer
+                    songs_to_send = []
+                    for song in our_songs:
+                        if not song.url:
+                            continue
+                        
+                        file_id = song.url.split('/')[-1]
+                        if file_id not in peer_filenames:
+                            songs_to_send.append(song)
+                    
+                    logger.info(f"[LEADER_SYNC] Enviando {len(songs_to_send)} canciones a {peer_id}")
+                    
+                    # Enviar archivos faltantes
+                    for song in songs_to_send:
+                        file_id = song.url.split('/')[-1]
+                        file_path = replication_manager.storage_path / file_id
+                        
+                        if file_path.exists():
+                            metadata = {
+                                "file_id": file_id,
+                                "nombre": song.nombre,
+                                "autor": song.autor,
+                                "album": song.album,
+                                "genero": song.genero,
+                                "url": song.url,
+                                "file_size": song.file_size
+                            }
+                            
+                            try:
+                                await self._send_file_to_peer(peer, file_path, metadata)
+                                logger.info(f"[LEADER_SYNC] Enviado {song.nombre} a {peer_id}")
+                            except Exception as e:
+                                logger.error(f"[LEADER_SYNC] Error enviando {song.nombre} a {peer_id}: {e}")
+                        else:
+                            logger.warning(f"[LEADER_SYNC] Archivo {file_id} no existe localmente para {song.nombre}")
+                
+                logger.info("[LEADER_SYNC] ========================================")
+                logger.info("[LEADER_SYNC] Sincronización del líder completada")
+                logger.info("[LEADER_SYNC] ========================================")
+                
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"[LEADER_SYNC] Error en flujo de sincronización: {e}", exc_info=True)
 
     async def submit_command(self, command: dict, timeout: float = 10.0):
         if not self.is_leader():
