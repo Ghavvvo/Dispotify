@@ -15,7 +15,7 @@ export function Topbar() {
     });
     const filterRef = useRef<HTMLDivElement>(null);
 
-    // Cerrar el menú de filtros al hacer clic fuera
+    
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
             if (filterRef.current && !filterRef.current.contains(event.target as Node)) {
@@ -65,13 +65,13 @@ export function Topbar() {
                 onClick={() => navigate("/") }
             >
                 <img src={'/spotify.png'} alt={'spotify'} className={'w-12 h-12'} />
-                <h2 className={'text-[#40B26B] text-2xl font-bold'}>Dispotify</h2>
+                <h2 className={'text-[
             </div>
             
             <div className={'relative w-1/3 h-full flex items-center gap-2'}>
                 <div className={'relative flex-1 h-full'}>
                     <input
-                        className={'w-full h-full rounded-full bg-[#1F1F1F] placeholder:text-neutral-100/50 text-neutral-100 px-4 pl-14 pr-10'}
+                        className={'w-full h-full rounded-full bg-[
                         placeholder={'¿Qué quieres reproducir?'}
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
@@ -93,8 +93,8 @@ export function Topbar() {
                     <button
                         className={`h-12 px-4 rounded-full flex items-center gap-2 transition-all ${
                             showFilters || Object.values(filters).some(f => f)
-                                ? 'bg-[#40B26B] text-white'
-                                : 'bg-[#1F1F1F] text-neutral-100/50 hover:text-neutral-100'
+                                ? 'bg-[
+                                : 'bg-[
                         }`}
                         onClick={() => setShowFilters(!showFilters)}
                     >
@@ -103,7 +103,7 @@ export function Topbar() {
                     </button>
 
                     {showFilters && (
-                        <div className={'absolute top-full mt-2 right-0 bg-[#1F1F1F] rounded-lg p-4 shadow-xl z-50 w-72'}>
+                        <div className={'absolute top-full mt-2 right-0 bg-[
                             <h3 className={'text-neutral-100 font-semibold mb-3'}>Filtrar por:</h3>
                             
                             <div className={'space-y-3'}>
@@ -111,7 +111,7 @@ export function Topbar() {
                                     <label className={'text-neutral-100/70 text-sm mb-1 block'}>Género</label>
                                     <input
                                         type="text"
-                                        className={'w-full bg-[#121212] text-neutral-100 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#40B26B]'}
+                                        className={'w-full bg-[
                                         placeholder={'Ej: Rock, Pop, Jazz...'}
                                         value={filters.genero}
                                         onChange={(e) => setFilters({ ...filters, genero: e.target.value })}
@@ -123,7 +123,7 @@ export function Topbar() {
                                     <label className={'text-neutral-100/70 text-sm mb-1 block'}>Autor</label>
                                     <input
                                         type="text"
-                                        className={'w-full bg-[#121212] text-neutral-100 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#40B26B]'}
+                                        className={'w-full bg-[
                                         placeholder={'Nombre del artista'}
                                         value={filters.autor}
                                         onChange={(e) => setFilters({ ...filters, autor: e.target.value })}
@@ -135,7 +135,7 @@ export function Topbar() {
                                     <label className={'text-neutral-100/70 text-sm mb-1 block'}>Álbum</label>
                                     <input
                                         type="text"
-                                        className={'w-full bg-[#121212] text-neutral-100 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#40B26B]'}
+                                        className={'w-full bg-[
                                         placeholder={'Nombre del álbum'}
                                         value={filters.album}
                                         onChange={(e) => setFilters({ ...filters, album: e.target.value })}
@@ -146,7 +146,7 @@ export function Topbar() {
 
                             <div className={'flex gap-2 mt-4'}>
                                 <button
-                                    className={'flex-1 bg-[#40B26B] text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-[#35a05d] transition-colors'}
+                                    className={'flex-1 bg-[
                                     onClick={() => {
                                         handleSearch();
                                         setShowFilters(false);
@@ -155,7 +155,7 @@ export function Topbar() {
                                     Aplicar
                                 </button>
                                 <button
-                                    className={'flex-1 bg-[#121212] text-neutral-100 rounded-md px-4 py-2 text-sm font-medium hover:bg-[#2a2a2a] transition-colors'}
+                                    className={'flex-1 bg-[
                                     onClick={() => {
                                         setFilters({ genero: "", autor: "", album: "" });
                                     }}

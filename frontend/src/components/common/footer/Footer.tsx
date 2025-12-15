@@ -1,11 +1,81 @@
 import { Music } from "lucide-react";
 import { usePlayer } from "../../../context/PlayerContext.tsx";
-import {apiUrl} from "../../../api/api.ts";
+import { useRef, useEffect, useState } from "react";
+
+
+const STATIC_URL = import.meta.env.VITE_STATIC_URL || 'http:
 
 export function Footer(){
     const { currentSong } = usePlayer();
-    const serverUrl = apiUrl.toString().split('/').slice(0, 3).join('/')
-    console.log(serverUrl)
+    const audioRef = useRef<HTMLAudioElement>(null);
+    const [retryCount, setRetryCount] = useState(0);
+    const lastPositionRef = useRef(0);
+    const isRetryingRef = useRef(false);
+
+    
+    const handleAudioError = (e: React.SyntheticEvent<HTMLAudioElement, Event>) => {
+        const audio = audioRef.current;
+        if (!audio || !currentSong || isRetryingRef.current) return;
+
+        
+        if (retryCount >= 5) {
+            console.error('Max retry attempts reached. Playback failed.');
+            isRetryingRef.current = false;
+            return;
+        }
+
+        console.warn(`Audio playback error detected. Attempting to reconnect to new leader... (attempt ${retryCount + 1}/5)`);
+        
+        
+        lastPositionRef.current = audio.currentTime || 0;
+        isRetryingRef.current = true;
+
+        
+        const retryDelay = Math.min(1000 * Math.pow(2, retryCount), 16000);
+
+        
+        setTimeout(() => {
+            if (audio && currentSong) {
+                console.log(`Retrying playback from position ${lastPositionRef.current}s`);
+                
+                
+                const cacheBuster = `?retry=${Date.now()}`;
+                audio.src = STATIC_URL + currentSong.url + cacheBuster;
+                
+                audio.load();
+                
+                
+                audio.addEventListener('loadedmetadata', () => {
+                    audio.currentTime = lastPositionRef.current;
+                }, { once: true });
+                
+                audio.play().then(() => {
+                    console.log('✅ Playback resumed successfully on new leader');
+                    setRetryCount(0);
+                    isRetryingRef.current = false;
+                }).catch((err) => {
+                    console.error('❌ Failed to resume playback:', err);
+                    setRetryCount(prev => prev + 1);
+                    isRetryingRef.current = false;
+                });
+            }
+        }, retryDelay);
+    };
+
+    
+    const handleTimeUpdate = () => {
+        if (audioRef.current && !isRetryingRef.current) {
+            lastPositionRef.current = audioRef.current.currentTime;
+        }
+    };
+
+    
+    useEffect(() => {
+        setRetryCount(0);
+        lastPositionRef.current = 0;
+        isRetryingRef.current = false;
+    }, [currentSong?.id]);
+
     return (
         <footer className={'flex bg-black w-full h-40 p-6 justify-between items-center gap-6'}>
             <div className={'flex items-center h-full'}>
@@ -37,10 +107,13 @@ export function Footer(){
             <div className={'flex items-center justify-center w-full'}>
                 {currentSong && (
                     <audio 
+                        ref={audioRef}
                         controls 
                         autoPlay
-                        src={serverUrl+currentSong.url}
+                        src={STATIC_URL+currentSong.url}
                         className={'w-full max-w-2xl'}
+                        onError={handleAudioError}
+                        onTimeUpdate={handleTimeUpdate}
                     />
                 )}
             </div>

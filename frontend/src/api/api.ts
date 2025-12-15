@@ -1,17 +1,28 @@
-// Obtener la URL del backend desde variables de entorno o usar valor por defecto
-export const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api/v1/"
+
+
+export const apiUrl = import.meta.env.VITE_API_URL || "http:
 
 const get = (endpoint: string) => 
     fetch(apiUrl + endpoint).then(res => res.json())
 
 const post = (endpoint: string, body: any) => {
-    // Si body es FormData, no establecer Content-Type
+    
     const isFormData = body instanceof FormData;
     return fetch(apiUrl + endpoint, {
         method: "POST",
         body: body,
         ...(isFormData ? {} : { headers: { "Content-Type": "application/json" } })
-    }).then(res => res.json())
+    }).then(async res => {
+        const text = await res.text();
+        if (!res.ok) {
+            throw new Error(text || `HTTP error! status: ${res.status}`);
+        }
+        try {
+            return text ? JSON.parse(text) : {};
+        } catch (e) {
+            return text;
+        }
+    })
 }
 
 const put = (endpoint: string, body: any) => 

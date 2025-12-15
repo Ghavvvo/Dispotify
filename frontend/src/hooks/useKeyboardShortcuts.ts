@@ -13,14 +13,14 @@ export const useKeyboardShortcuts = () => {
 
     useEffect(() => {
         const handleKeyPress = (e: KeyboardEvent) => {
-            // Ignorar si el usuario está escribiendo en un input
+            
             if (e.target instanceof HTMLInputElement || 
                 e.target instanceof HTMLTextAreaElement) {
                 return;
             }
 
             switch(e.key) {
-                case ' ': // Espacio para play/pause
+                case ' ': 
                     e.preventDefault();
                     if (currentSong) {
                         togglePlayPause();
@@ -59,7 +59,7 @@ export const useKeyboardShortcuts = () => {
                     
                 case 'm':
                 case 'M':
-                    // Mute/unmute
+                    
                     e.preventDefault();
                     setVolume(volume > 0 ? 0 : 0.8);
                     break;

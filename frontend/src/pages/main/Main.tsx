@@ -11,7 +11,7 @@ function Main() {
         getSongs()
     }, [])
     
-    // Determinar qué canciones mostrar: resultados de búsqueda o todas las canciones
+    
     const displaySongs = Object.keys(activeFilters).some(key => activeFilters[key as keyof typeof activeFilters]) 
         ? searchResults 
         : songs;

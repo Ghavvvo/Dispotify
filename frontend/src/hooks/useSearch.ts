@@ -22,7 +22,7 @@ export const useSearch = () => {
         setError(null);
 
         try {
-            // Filtrar solo los parámetros que tienen valor
+            
             const params = Object.entries(filters).reduce((acc, [key, value]) => {
                 if (value && value.trim() !== "") {
                     acc[key] = value;
@@ -30,7 +30,7 @@ export const useSearch = () => {
                 return acc;
             }, {} as Record<string, string>);
 
-            // Si no hay filtros, retornar array vacío
+            
             if (Object.keys(params).length === 0) {
                 setResults([]);
                 setIsSearching(false);
@@ -38,7 +38,7 @@ export const useSearch = () => {
             }
 
             const queryString = toQueryParams(params);
-            const response = await api.get(`music/search?${queryString}`);
+            const response = await api.get(`music/?${queryString}`);
             setResults(response);
             setIsSearching(false);
             return response;

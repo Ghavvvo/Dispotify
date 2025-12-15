@@ -12,11 +12,12 @@ export const useServerSongs = () => {
     
     const getSongs = () => {
         setIsGettingSongs(true)
-        api.get("music").then((resp) => {
+        api.get("music/").then((resp) => {
             setSongs(resp)
+            setIsGettingSongs(false)
         }).catch((e) => {
             console.error(e)
-            toast.error(e, {
+            toast.error("Error al cargar las canciones", {
                 position: "top-right",
                 autoClose: 3000,
                 hideProgressBar: false,
@@ -24,18 +25,34 @@ export const useServerSongs = () => {
                 pauseOnHover: true,
                 draggable: true,
             })
-
+            setIsGettingSongs(false)
         })
-        setIsGettingSongs(false)
     }
     const uploadSong = (body: unknown) => {
         setIsUploadingSong(true)
         api.post("music/upload", body).then((resp) => {
             console.log(resp)
+            toast.success("Canción subida correctamente", {
+                position: "top-right",
+                autoClose: 3000,
+                hideProgressBar: false,
+                closeOnClick: true,
+                pauseOnHover: true,
+                draggable: true,
+            })
+            setIsUploadingSong(false)
         }).catch((e) => {
             console.error(e)
+            toast.error("Error al subir la canción", {
+                position: "top-right",
+                autoClose: 3000,
+                hideProgressBar: false,
+                closeOnClick: true,
+                pauseOnHover: true,
+                draggable: true,
+            })
+            setIsUploadingSong(false)
         })
-        setIsUploadingSong(false)
 
     }
     const deleteSong = async (id: number) => {
@@ -48,25 +65,7 @@ export const useServerSongs = () => {
         setIsDeletingSong(false)
     }
     
-    /*const downloadSong = (id: number) => {
-        setIsGettingSongs(true)
-        api.get(`music/${id}/stream`).then((resp) => {
-            setSongs(resp)
-        }).catch((e) => {
-            console.error(e)
-            toast.error(e, {
-                position: "top-right",
-                autoClose: 3000,
-                hideProgressBar: false,
-                closeOnClick: true,
-                pauseOnHover: true,
-                draggable: true,
-            })
-
-        })
-        setIsGettingSongs(false)
-    }
-    */
+    
     return {
         songs,
         getSongs,
