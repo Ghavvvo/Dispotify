@@ -1,885 +1,791 @@
-
 import asyncio
+import logging
 import time
 import random
-import json
-import logging
-from enum import Enum
-from typing import List, Optional, Dict, Callable, Awaitable, Any
-from dataclasses import dataclass
-from pathlib import Path
+import os
+import socket
 import aiofiles
-
-from app.distributed.communication import (
-    P2PClient,
-    NodeInfo,
-    P2PException,
-    get_p2p_client
-)
+from enum import Enum
+from typing import List, Dict, Optional, Set
+from .communication import NodeInfo, CommunicationLayer
+from .state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
 
-
-class NodeState(Enum):
-
+class RaftState(Enum):
     FOLLOWER = "follower"
     CANDIDATE = "candidate"
     LEADER = "leader"
+    PARTITION_LEADER = "partition_leader"
+    SOLO = "solo"
 
-
-@dataclass
-class LogEntry:
-
-    term: int
-    index: int
-    command: Dict[str, Any]
-
-    def to_dict(self):
-        return {
-            "term": self.term,
-            "index": self.index,
-            "command": self.command
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict):
-        return cls(
-            term=data["term"],
-            index=data["index"],
-            command=data["command"]
-        )
 class RaftNode:
+    _instance = None
 
-
-    def __init__(
-            self,
-            node_id: str,
-            node_info: NodeInfo,
-            cluster_nodes: Optional[List[NodeInfo]] = None,
-            data_dir: str = "/data/raft",
-            election_timeout_min: float = 1.5,
-            election_timeout_max: float = 3.0,
-            heartbeat_interval: float = 0.5
-    ):
-        self.node_id = node_id
-        self.node_info = node_info
-        self.cluster_nodes = [n for n in (cluster_nodes or []) if n.id != node_id]
-        self.data_dir = Path(data_dir)
-        self.election_timeout_min = election_timeout_min
-        self.election_timeout_max = election_timeout_max
-        self.heartbeat_interval = heartbeat_interval
-
-
+    def __init__(self):
+        self.node_id = os.getenv("NODE_ID", f"node-{random.randint(1000,9999)}")
+        
+        try:
+            self.address = socket.gethostbyname(socket.gethostname())
+        except:
+            self.address = os.getenv("NODE_ADDRESS", "0.0.0.0") 
+        self.port = int(os.getenv("PORT", "8000"))
+        
+        self.state = RaftState.FOLLOWER
         self.current_term = 0
-        self.voted_for: Optional[str] = None
-        self.log: List[LogEntry] = []
-
-
-        self.state = NodeState.FOLLOWER
-        self.leader_id: Optional[str] = None
+        self.voted_for = None
+        self.log = []
         self.commit_index = -1
         self.last_applied = -1
-
-
-        self.next_index: Dict[str, int] = {}
+        
+        self.peers: Dict[str, NodeInfo] = {}
+        self.reachable_peers: Set[str] = set()
         self.match_index: Dict[str, int] = {}
-        self._failed_nodes: Dict[str, float] = {}
+        self.next_index: Dict[str, int] = {}
+        self.leader_id = None
+        
+        self.comm = CommunicationLayer()
+        self.last_heartbeat_received = time.time()
+        self.election_timeout = random.uniform(3.0, 6.0)
+        
+        self.running = False
+        self.bootstrap_service = os.getenv("BOOTSTRAP_SERVICE", "dispotify-cluster")
+        self.state_machine = StateMachine()
 
-
-        self._running = False
-        self.last_heartbeat = time.time()
-        self._election_task: Optional[asyncio.Task] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
-
-
-        self._on_become_leader: Optional[Callable[[], Awaitable[None]]] = None
-        self._on_lose_leadership: Optional[Callable[[], Awaitable[None]]] = None
-        self._on_command_applied: Optional[Callable[[dict], Awaitable[None]]] = None
-
-
-        self.state_machine: Dict[str, Any] = {}
-
-
-        self.p2p_client: Optional[P2PClient] = None
-
-
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "log").mkdir(exist_ok=True)
-        (self.data_dir / "snapshots").mkdir(exist_ok=True)
-
-        logger.info(
-            f"Nodo Raft {node_id} inicializado con {len(self.cluster_nodes)} peers"
-        )
-
-    def _random_election_timeout(self) -> float:
-
-        return random.uniform(self.election_timeout_min, self.election_timeout_max)
-
-    def add_cluster_node(self, node: NodeInfo):
-        if node.id == self.node_id:
-            logger.debug(f"No se puede agregar el nodo local al cluster")
-            return
-
-        if any(n.id == node.id for n in self.cluster_nodes):
-            logger.debug(f"Nodo {node.id} ya existe en el cluster")
-            return
-
-        self.cluster_nodes.append(node)
-
-        if self.state == NodeState.LEADER:
-            self.next_index[node.id] = len(self.log)
-            self.match_index[node.id] = -1
-            asyncio.create_task(self._sync_node(node))
-
-        logger.info(f"Nodo {node.id} agregado al cluster Raft (total: {len(self.cluster_nodes) + 1})")
-
-    def remove_cluster_node(self, node_id: str):
-        self.cluster_nodes = [n for n in self.cluster_nodes if n.id != node_id]
-        if self.state == NodeState.LEADER:
-            self.next_index.pop(node_id, None)
-            self.match_index.pop(node_id, None)
-
-        logger.info(f"Nodo {node_id} eliminado del cluster Raft (total: {len(self.cluster_nodes) + 1})")
-
-    def get_cluster_nodes(self) -> List[NodeInfo]:
-        return self.cluster_nodes.copy()
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = RaftNode()
+        return cls._instance
 
     async def start(self):
+        self.running = True
+        logger.info(f"Starting RaftNode {self.node_id} on {self.address}:{self.port}")
+        asyncio.create_task(self.run_loop())
+        asyncio.create_task(self.discovery_loop())
+        asyncio.create_task(self.apply_loop())
 
-        if self._running:
-            logger.warning(f"Nodo Raft {self.node_id} ya está corriendo")
-            return
+    async def discovery_loop(self):
+        while self.running:
+            ips = self.comm.discover_nodes(self.bootstrap_service)
+            for ip in ips:
+                
+                target_port = self.port 
+                
+                
+                temp_node = NodeInfo(id="unknown", address=ip, port=target_port)
+                
+                try:
+                    resp = await self.comm.send_rpc(temp_node, "GET", "/health")
+                    if resp and resp.get("status") == "healthy":
+                        node_id = resp.get("node_id")
+                        if node_id and node_id != self.node_id:
+                            if node_id not in self.peers:
+                                logger.info(f"Discovered peer {node_id} at {ip}")
+                                new_node = NodeInfo(id=node_id, address=ip, port=target_port)
+                                self.add_peer(new_node)
+                            else:
+                                
+                                if self.peers[node_id].address != ip:
+                                    self.peers[node_id].address = ip
+                except Exception:
+                    pass
+            await asyncio.sleep(5)
 
-        self._running = True
-        self.p2p_client = get_p2p_client()
-
-
-        await self._load_state()
-        await self._load_log()
-
-
-        self._election_task = asyncio.create_task(self._election_timer_loop())
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_sender_loop())
-
-        logger.info(
-            f"Nodo Raft {self.node_id} iniciado "
-            f"(term={self.current_term}, log_size={len(self.log)})"
-        )
-        if self.cluster_nodes:
-            asyncio.create_task(self._request_initial_sync())
-
-    async def stop(self):
-
-        if not self._running:
-            return
-
-        logger.info(f"Deteniendo nodo Raft {self.node_id}...")
-
-        self._running = False
-
-
-        if self._election_task:
-            self._election_task.cancel()
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-
-
-        await self._persist_state()
-
-        logger.info(f" Nodo Raft {self.node_id} detenido")
-
-    async def _request_initial_sync(self):
-        await asyncio.sleep(0.5)
-
-        if not self._running or self.state == NodeState.LEADER:
-            return
-
-        logger.info(f"Solicitando sincronización inicial de peers...")
-
-        leader_node = None
-        for peer in self.cluster_nodes:
-            try:
-                response = await self.p2p_client.call_rpc(
-                    peer, "GET", "/internal/cluster-info", retries=1
-                )
-
-                leader_id = response.get("leader_id")
-                if leader_id:
-                    self.leader_id = leader_id
-                    self.last_heartbeat = time.time()
-                    logger.info(f"Sync inicial: líder es {leader_id} (via {peer.id})")
-
-                    if leader_id == peer.id:
-                        leader_node = peer
+    async def apply_loop(self):
+        while self.running:
+            if self.commit_index > self.last_applied:
+                
+                self.last_applied += 1
+                
+                
+                if self.last_applied < len(self.log):
+                    entry = self.log[self.last_applied]
+                    command = entry.get("command")
+                    if command:
+                        logger.info(f"[APPLY] Applying log index {self.last_applied}: {command.get('type')} - {command.get('nombre', 'N/A')}")
+                        
+                        await asyncio.to_thread(self.state_machine.apply, command)
                     else:
-                        leader_node = next((n for n in self.cluster_nodes if n.id == leader_id), None)
-                    break
-
-            except P2PException as e:
-                logger.debug(f"No se pudo contactar a {peer.id} para sync inicial: {e}")
-                continue
-
-        if not leader_node:
-            logger.warning("Sync inicial: no se encontró líder")
-            return
-
-        try:
-            await self.p2p_client.call_rpc(
-                leader_node,
-                "POST",
-                "/internal/request-sync",
-                {
-                    "node_id": self.node_id,
-                    "node_address": self.node_info.address,
-                    "node_port": self.node_info.port,
-                    "current_log_size": len(self.log),
-                    "current_term": self.current_term
-                },
-                retries=2
-            )
-            logger.info(f"Sync inicial: notificado al líder {leader_id} que necesitamos sync")
-        except P2PException as e:
-            logger.warning(f"Sync inicial: no se pudo notificar al líder: {e}")
-
-
-
-
-
-    async def _load_state(self):
-
-        state_file = self.data_dir / "state.json"
-
-        if state_file.exists():
-            async with aiofiles.open(state_file, "r") as f:
-                content = await f.read()
-                state = json.loads(content)
-                self.current_term = state.get("current_term", 0)
-                self.voted_for = state.get("voted_for")
-                logger.info(
-                    f"Estado cargado: term={self.current_term}, "
-                    f"voted_for={self.voted_for}"
-                )
-        else:
-            logger.info("No hay estado previo, iniciando limpio")
-
-    async def _persist_state(self):
-
-        state_file = self.data_dir / "state.json"
-
-        state = {
-            "current_term": self.current_term,
-            "voted_for": self.voted_for,
-            "updated_at": time.time()
-        }
-
-        async with aiofiles.open(state_file, "w") as f:
-            await f.write(json.dumps(state, indent=2))
-
-    async def _load_log(self):
-
-        log_dir = self.data_dir / "log"
-        log_files = sorted(log_dir.glob("*.log"))
-
-        self.log = []
-        for log_file in log_files:
-            async with aiofiles.open(log_file, "r") as f:
-                content = await f.read()
-                entries = json.loads(content)
-                for entry_data in entries:
-                    self.log.append(LogEntry.from_dict(entry_data))
-
-        logger.info(f"Log cargado: {len(self.log)} entradas")
-
-    async def _persist_log_entry(self, entry: LogEntry):
-
-
-        file_num = entry.index // 1000
-        log_file = self.data_dir / "log" / f"{file_num:06d}.log"
-
-
-        if log_file.exists():
-            async with aiofiles.open(log_file, "r") as f:
-                content = await f.read()
-                entries = json.loads(content) if content else []
-        else:
-            entries = []
-
-
-        entries.append(entry.to_dict())
-
-
-        async with aiofiles.open(log_file, "w") as f:
-            await f.write(json.dumps(entries, indent=2))
-
-    async def _election_timer_loop(self):
-
-        while self._running:
-            try:
-
-                if self.state in [NodeState.FOLLOWER, NodeState.CANDIDATE]:
-                    elapsed = time.time() - self.last_heartbeat
-                    timeout = self._random_election_timeout()
-
-                    if elapsed >= timeout:
-                        logger.warning(
-                            f"Election timeout ({elapsed:.2f}s >= {timeout:.2f}s), "
-                            f"iniciando elección"
-                        )
-                        await self._start_election()
-
+                        logger.warning(f"[APPLY] Log entry {self.last_applied} has no command")
+                else:
+                    logger.warning(f"[APPLY] last_applied={self.last_applied} >= log length={len(self.log)}")
+                    
+                    self.last_applied = len(self.log) - 1
+            else:
                 await asyncio.sleep(0.1)
 
-            except Exception as e:
-                logger.error(f"Error en election timer: {e}", exc_info=True)
-                await asyncio.sleep(1)
+    async def run_loop(self):
+        while self.running:
+            now = time.time()
+            
+            if self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER, RaftState.SOLO]:
+                if now - self.last_heartbeat_received >= 1.0: 
+                    await self.send_heartbeats()
+                    self.last_heartbeat_received = now 
+            
+            elif self.state in [RaftState.FOLLOWER, RaftState.CANDIDATE]:
+                if now - self.last_heartbeat_received > self.election_timeout:
+                    logger.info(f"Election timeout ({self.election_timeout}s). Starting election.")
+                    await self.start_election()
+                    
+                
+                
+                
+                
+                
 
-    async def _start_election(self):
+            await asyncio.sleep(0.1)
 
-
-        self.state = NodeState.CANDIDATE
+    async def start_election(self):
+        self.state = RaftState.CANDIDATE
         self.current_term += 1
         self.voted_for = self.node_id
-        self.leader_id = None
-        await self._persist_state()
-
-        logger.info(f" Iniciando elección para term {self.current_term}")
-
-
-        votes_received = 1
-        votes_needed = (len(self.cluster_nodes) + 1) // 2 + 1
-
-
-        last_log_index = len(self.log) - 1
-        last_log_term = self.log[-1].term if self.log else 0
-
-        vote_requests = []
-        for peer in self.cluster_nodes:
-            request = {
-                "term": self.current_term,
-                "candidate_id": self.node_id,
-                "last_log_index": last_log_index,
-                "last_log_term": last_log_term
-            }
-            vote_requests.append(
-                self.p2p_client.call_rpc(peer, "POST", "/raft/request-vote", request)
-            )
-
-
-        results = await asyncio.gather(*vote_requests, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, Exception):
-                logger.debug(f"Error pidiendo voto: {result}")
-                continue
-
-            if result.get("vote_granted"):
-                votes_received += 1
-                logger.info(
-                    f"Voto recibido de {result.get('from_node')} "
-                    f"({votes_received}/{votes_needed})"
-                )
-
-
-        if votes_received >= votes_needed and self.state == NodeState.CANDIDATE:
-            await self._become_leader()
-        else:
-            logger.info(
-                f"Elección perdida: {votes_received}/{votes_needed} votos"
-            )
-
-            self.state = NodeState.FOLLOWER
-
-    async def _become_leader(self):
-
-        logger.info(f"Convirtiéndose en LÍDER para term {self.current_term}")
-
-        self.state = NodeState.LEADER
-        self.leader_id = self.node_id
-
-
-        last_log_index = len(self.log) - 1
-        for peer in self.cluster_nodes:
-            self.next_index[peer.id] = last_log_index + 1
-            self.match_index[peer.id] = -1
-
-
-        if self._on_become_leader:
+        self.election_timeout = random.uniform(3.0, 6.0)
+        self.last_heartbeat_received = time.time()
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        reachable_count = 0
+        votes = 1 
+        
+        peers_to_remove = []
+        
+        for peer_id, peer in self.peers.items():
             try:
-                await self._on_become_leader()
-            except Exception as e:
-                logger.error(f"Error en callback on_become_leader: {e}")
+                resp = await self.comm.send_rpc(
+                    peer, "POST", "/raft/request-vote",
+                    {
+                        "term": self.current_term,
+                        "candidate_id": self.node_id,
+                        "last_log_index": len(self.log) - 1,
+                        "last_log_term": self.log[-1]["term"] if self.log else 0
+                    }
+                )
+                if resp:
+                    reachable_count += 1
+                    if resp.get("vote_granted"):
+                        votes += 1
+                else:
+                    peers_to_remove.append(peer_id)
+            except Exception:
+                peers_to_remove.append(peer_id)
 
+        
+        for pid in peers_to_remove:
+            if pid in self.peers:
+                del self.peers[pid]
+            if pid in self.reachable_peers:
+                self.reachable_peers.remove(pid)
+            logger.info(f"Peer {pid} removed due to failure during election")
 
-        await self._send_heartbeats()
-
-        asyncio.create_task(self._sync_all_nodes())
-
-    async def _sync_node(self, peer: NodeInfo):
-
-        if self.state != NodeState.LEADER:
+        
+        if reachable_count == 0:
+            self.state = RaftState.SOLO
+            self.leader_id = self.node_id
+            logger.info("No peers reachable during election. Entering SOLO mode.")
             return
 
-        max_attempts = 50
-        attempt = 0
+        
+        
+        total_participating = reachable_count + 1
+        needed = (total_participating 
+        
+        logger.info(f"Election Term {self.current_term}. Votes: {votes}/{total_participating} (Needed: {needed})")
 
-        logger.info(f"Iniciando sincronización activa con {peer.id}")
+        if votes >= needed:
+            if len(self.peers) > 0 and reachable_count < len(self.peers) 
+                 self.state = RaftState.PARTITION_LEADER
+            else:
+                 self.state = RaftState.LEADER
+            
+            self.leader_id = self.node_id
+            logger.info(f"Won election! State: {self.state}")
+            await self.send_heartbeats()
+        else:
+            self.state = RaftState.FOLLOWER
 
-        while self._running and self.state == NodeState.LEADER and attempt < max_attempts:
-            attempt += 1
+    def update_commit_index(self):
+        
+        match_indices = [len(self.log) - 1] 
+        for peer_id in self.peers:
+            match_indices.append(self.match_index.get(peer_id, -1))
+        
+        match_indices.sort(reverse=True)
+        
+        
+        n = len(match_indices)
+        if n == 0: return
+        
+        N = match_indices[n 
+        
+        if N > self.commit_index and N < len(self.log):
+            
+            if self.log[N]["term"] == self.current_term:
+                self.commit_index = N
+                logger.info(f"Leader commit_index updated to {self.commit_index}")
 
-            if self.match_index.get(peer.id, -1) >= len(self.log) - 1:
-                logger.info(f"Nodo {peer.id} completamente sincronizado (match_index={self.match_index.get(peer.id, -1)})")
-                return
+    async def send_heartbeats(self):
+        
+        for peer_id, peer in self.peers.items():
+            asyncio.create_task(self._send_heartbeat_to_peer(peer))
+            
+        
+        if self.state == RaftState.SOLO and len(self.reachable_peers) > 0:
+            self.state = RaftState.LEADER
+            logger.info(f"Peers reachable ({len(self.reachable_peers)}). Transitioning SOLO -> LEADER")
+            
+        
+        if self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER] and len(self.reachable_peers) == 0:
+            self.state = RaftState.SOLO
+            logger.info("No peers reachable. Transitioning LEADER -> SOLO")
 
-            prev_log_index = self.next_index.get(peer.id, 0) - 1
-            prev_log_term = self.log[prev_log_index].term if prev_log_index >= 0 and prev_log_index < len(self.log) else 0
+    async def _send_heartbeat_to_peer(self, peer):
+        try:
+            prev_log_index = self.next_index.get(peer.id, len(self.log)) - 1
+            prev_log_term = 0
+            if prev_log_index >= 0 and prev_log_index < len(self.log):
+                prev_log_term = self.log[prev_log_index]["term"]
+            
+            entries = []
+            if len(self.log) > prev_log_index + 1:
+                entries = self.log[prev_log_index + 1:]
 
-            next_idx = self.next_index.get(peer.id, 0)
-            entries_to_send = []
-            if next_idx < len(self.log):
-                batch_size = min(100, len(self.log) - next_idx)
-                entries_to_send = [e.to_dict() for e in self.log[next_idx:next_idx + batch_size]]
+            
+            known_peers = [n.dict() for n in self.get_all_nodes()]
 
-            request = {
-                "term": self.current_term,
-                "leader_id": self.node_id,
-                "prev_log_index": prev_log_index,
-                "prev_log_term": prev_log_term,
-                "entries": entries_to_send,
-                "leader_commit": self.commit_index
-            }
-
-            try:
-                response = await self.p2p_client.call_rpc(
-                    peer, "POST", "/raft/append-entries", request, retries=1
-                )
-
-                if response.get("term", 0) > self.current_term:
-                    await self._step_down(response["term"])
+            resp = await self.comm.send_rpc(
+                peer, "POST", "/raft/append-entries",
+                {
+                    "term": self.current_term,
+                    "leader_id": self.node_id,
+                    "prev_log_index": prev_log_index,
+                    "prev_log_term": prev_log_term,
+                    "entries": entries,
+                    "leader_commit": self.commit_index,
+                    "known_peers": known_peers
+                }
+            )
+            if resp:
+                self.reachable_peers.add(peer.id)
+                if resp.get("term") > self.current_term:
+                    self.current_term = resp.get("term")
+                    self.state = RaftState.FOLLOWER
+                    self.voted_for = None
                     return
 
-                if response.get("success"):
-                    if entries_to_send:
-                        last_entry_index = prev_log_index + len(entries_to_send)
-                        self.match_index[peer.id] = last_entry_index
-                        self.next_index[peer.id] = last_entry_index + 1
-                        logger.debug(
-                            f"Sync {peer.id}: enviadas {len(entries_to_send)} entradas, "
-                            f"match_index={last_entry_index}"
-                        )
+                
+                if resp.get("was_partition_leader") and resp.get("merge_needed"):
+                    logger.info(f"[MERGE] Peer {peer.id} was partition leader (term {resp.get('old_term')}). Initiating merge from leader side.")
+                    asyncio.create_task(self._initiate_leader_side_merge(peer))
+
+                if resp.get("success"):
+                    
+                    if entries:
+                        self.match_index[peer.id] = prev_log_index + len(entries)
+                        self.next_index[peer.id] = self.match_index[peer.id] + 1
+                        self.update_commit_index()
                 else:
-                    follower_log_length = response.get("log_length")
-                    if follower_log_length is not None:
-                        self.next_index[peer.id] = min(self.next_index.get(peer.id, 0), follower_log_length)
-                    else:
-                        self.next_index[peer.id] = max(0, self.next_index.get(peer.id, 0) - 1)
-
-                    logger.debug(f"Sync {peer.id}: ajustando next_index a {self.next_index[peer.id]}")
-
-            except P2PException as e:
-                logger.debug(f"Error en sync con {peer.id}: {e}")
-                await asyncio.sleep(0.5)
-                continue
-
-            await asyncio.sleep(0.1)
-
-        if attempt >= max_attempts:
-            logger.warning(f"Sync con {peer.id} no completada después de {max_attempts} intentos")
-
-    async def _sync_all_nodes(self):
-
-        if self.state != NodeState.LEADER or not self.cluster_nodes:
-            return
-
-        logger.info(f"Líder iniciando sincronización de {len(self.cluster_nodes)} nodos")
-
-        sync_tasks = [self._sync_node(peer) for peer in self.cluster_nodes]
-        await asyncio.gather(*sync_tasks, return_exceptions=True)
-
-        logger.info("Sincronización inicial de nodos completada")
-    async def _heartbeat_sender_loop(self):
-
-        while self._running:
-            try:
-                if self.state == NodeState.LEADER:
-                    await self._send_heartbeats()
-
-                await asyncio.sleep(self.heartbeat_interval)
-
-            except Exception as e:
-                logger.error(f"Error en heartbeat sender: {e}", exc_info=True)
-                await asyncio.sleep(1)
-
-    async def _send_heartbeats(self):
-
-        if self.state != NodeState.LEADER:
-            return
-
-        heartbeat_requests = []
-        for peer in self.cluster_nodes:
-            prev_log_index = self.next_index[peer.id] - 1
-            prev_log_term = self.log[prev_log_index].term if prev_log_index >= 0 else 0
-
-
-            entries_to_send = []
-            next_idx = self.next_index[peer.id]
-            if next_idx < len(self.log):
-
-                entries_to_send = [e.to_dict() for e in self.log[next_idx:]]
-
-            request = {
-                "term": self.current_term,
-                "leader_id": self.node_id,
-                "prev_log_index": prev_log_index,
-                "prev_log_term": prev_log_term,
-                "entries": entries_to_send,
-                "leader_commit": self.commit_index
-            }
-
-            heartbeat_requests.append(
-                self._send_append_entries(peer, request)
-            )
-
-        await asyncio.gather(*heartbeat_requests, return_exceptions=True)
-
-    async def _send_append_entries(self, peer: NodeInfo, request: dict):
-
-        try:
-            response = await self.p2p_client.call_rpc(
-                peer, "POST", "/raft/append-entries", request
-            )
-
-            was_failed = peer.id in self._failed_nodes
-            if was_failed:
-                del self._failed_nodes[peer.id]
-                logger.info(f"Nodo {peer.id} recuperado, iniciando sincronización activa")
-                asyncio.create_task(self._sync_node(peer))
-                return
-
-            if response.get("term", 0) > self.current_term:
-
-                await self._step_down(response["term"])
-                return
-
-            if response.get("success"):
-
-                if request["entries"]:
-                    last_entry_index = request["prev_log_index"] + len(request["entries"])
-                    self.match_index[peer.id] = last_entry_index
-                    self.next_index[peer.id] = last_entry_index + 1
+                    
+                    self.next_index[peer.id] = max(0, self.next_index.get(peer.id, 1) - 1)
             else:
-                follower_log_length = response.get("log_length")
+                if peer.id in self.reachable_peers:
+                    self.reachable_peers.remove(peer.id)
+                
+                if peer.id in self.peers:
+                    del self.peers[peer.id]
+                    logger.info(f"Peer {peer.id} removed due to failure")
+        except Exception:
+            if peer.id in self.reachable_peers:
+                self.reachable_peers.remove(peer.id)
+            
+            if peer.id in self.peers:
+                del self.peers[peer.id]
+                logger.info(f"Peer {peer.id} removed due to failure")
 
-                if follower_log_length is not None:
-                    old_next = self.next_index[peer.id]
-                    self.next_index[peer.id] = min(self.next_index[peer.id], follower_log_length)
-                    logger.debug(
-                        f"Sync rápida {peer.id}: next_index {old_next} -> {self.next_index[peer.id]} "
-                        f"(follower log_length={follower_log_length})"
-                    )
-                else:
-                    self.next_index[peer.id] = max(0, self.next_index[peer.id] - 1)
-
-        except P2PException as e:
-            if peer.id not in self._failed_nodes:
-                self._failed_nodes[peer.id] = time.time()
-                logger.warning(f"Nodo {peer.id} marcado como caído")
-            logger.debug(f"Error enviando AppendEntries a {peer.id}: {e}")
-
-    async def _step_down(self, new_term: int):
-
-        logger.info(
-            f"Descubierto term superior ({new_term} > {self.current_term}), "
-            f"volviendo a FOLLOWER"
-        )
-
-        was_leader = self.state == NodeState.LEADER
-
-        self.current_term = new_term
-        self.state = NodeState.FOLLOWER
-        self.voted_for = None
-        self.leader_id = None
-        await self._persist_state()
-
-        if was_leader and self._on_lose_leadership:
-            try:
-                await self._on_lose_leadership()
-            except Exception as e:
-                logger.error(f"Error en callback on_lose_leadership: {e}")
-
-    async def handle_request_vote(self, request: dict) -> dict:
-
-        candidate_term = request["term"]
-        candidate_id = request["candidate_id"]
-        candidate_last_log_index = request["last_log_index"]
-        candidate_last_log_term = request["last_log_term"]
-
-
-        if candidate_term > self.current_term:
-            await self._step_down(candidate_term)
-
+    async def handle_request_vote(self, data: dict):
+        term = data.get("term")
+        candidate_id = data.get("candidate_id")
+        
+        if term > self.current_term:
+            self.current_term = term
+            self.state = RaftState.FOLLOWER
+            self.voted_for = None
+            
         vote_granted = False
+        if (term >= self.current_term and 
+            (self.voted_for is None or self.voted_for == candidate_id)):
+            vote_granted = True
+            self.voted_for = candidate_id
+            self.last_heartbeat_received = time.time()
+            
+        return {"term": self.current_term, "vote_granted": vote_granted}
 
+    async def handle_append_entries(self, data: dict):
+        term = data.get("term")
+        leader_id = data.get("leader_id")
+        prev_log_index = data.get("prev_log_index")
+        prev_log_term = data.get("prev_log_term")
+        entries = data.get("entries")
+        leader_commit = data.get("leader_commit")
+        
+        logger.debug(f"[APPEND_ENTRIES] Received from {leader_id}: prev_log_index={prev_log_index}, entries={len(entries) if entries else 0}, leader_commit={leader_commit}, my_commit={self.commit_index}")
+        
+        if term < self.current_term:
+            return {"term": self.current_term, "success": False}
 
-        if candidate_term < self.current_term:
+        
+        was_partition_leader = self.state == RaftState.PARTITION_LEADER
+        was_solo = self.state == RaftState.SOLO
+        was_leader = self.is_leader()
+        old_term = self.current_term
+        old_state = self.state
+        old_leader_id = self.leader_id
+        
+        self.current_term = term
+        self.state = RaftState.FOLLOWER
+        self.leader_id = leader_id
+        self.last_heartbeat_received = time.time()
+        
+        
+        should_merge = False
+        merge_reason = ""
+        
+        if was_partition_leader and term > old_term:
+            should_merge = True
+            merge_reason = f"Was partition leader (term {old_term}), now joining leader {leader_id} (term {term})"
+        elif was_solo and term >= old_term:
+            
+            should_merge = True
+            merge_reason = f"Was SOLO (term {old_term}), now joining leader {leader_id} (term {term})"
+        
+        if should_merge:
+            logger.info(f"[MERGE] Detected partition merge. {merge_reason}")
+            asyncio.create_task(self._handle_partition_merge(leader_id))
+        
+        
+        response = {"term": self.current_term, "success": False}
+        if was_leader and should_merge:
+            response["was_partition_leader"] = True
+            response["old_term"] = old_term
+            response["merge_needed"] = True
+        
+        
+        known_peers = data.get("known_peers", [])
+        if known_peers:
+            current_peer_ids = set(self.peers.keys())
+            new_peer_ids = set()
+            for p_data in known_peers:
+                
+                if p_data.get("id") == self.node_id:
+                    continue
+                
+                p = NodeInfo(**p_data)
+                new_peer_ids.add(p.id)
+                
+                if p.id not in self.peers:
+                    self.add_peer(p)
+                    logger.info(f"Added peer {p.id} from leader sync")
+                elif self.peers[p.id].address != p.address:
+                    self.peers[p.id].address = p.address
+            
+            
+            for pid in current_peer_ids:
+                if pid not in new_peer_ids:
+                    if pid in self.peers:
+                        del self.peers[pid]
+                    if pid in self.reachable_peers:
+                        self.reachable_peers.remove(pid)
+                    logger.info(f"Removed peer {pid} (not in leader's list)")
 
-            pass
-        elif self.voted_for is not None and self.voted_for != candidate_id:
-
-            pass
-        else:
-
-            my_last_log_index = len(self.log) - 1
-            my_last_log_term = self.log[-1].term if self.log else 0
-
-            log_is_up_to_date = (
-                    candidate_last_log_term > my_last_log_term or
-                    (candidate_last_log_term == my_last_log_term and
-                     candidate_last_log_index >= my_last_log_index)
-            )
-
-            if log_is_up_to_date:
-                vote_granted = True
-                self.voted_for = candidate_id
-                self.last_heartbeat = time.time()
-                await self._persist_state()
-                logger.info(f" Voto otorgado a {candidate_id} para term {candidate_term}")
-
-        return {
-            "term": self.current_term,
-            "vote_granted": vote_granted,
-            "from_node": self.node_id
-        }
-
-    async def handle_append_entries(self, request: dict) -> dict:
-
-        leader_term = request["term"]
-        leader_id = request["leader_id"]
-        prev_log_index = request["prev_log_index"]
-        prev_log_term = request["prev_log_term"]
-        entries = request["entries"]
-        leader_commit = request["leader_commit"]
-
-
-        self.last_heartbeat = time.time()
-
-
-        if leader_term > self.current_term:
-            await self._step_down(leader_term)
-
-
-        if leader_term == self.current_term and self.leader_id != leader_id:
-            self.leader_id = leader_id
-            self.state = NodeState.FOLLOWER
-            logger.info(f"Reconociendo líder: {leader_id}")
-
-        success = False
-
-        if leader_term < self.current_term:
-
-            pass
-        elif prev_log_index >= 0 and (
-                prev_log_index >= len(self.log) or
-                self.log[prev_log_index].term != prev_log_term
-        ):
-
-            logger.debug(
-                f"Log inconsistency: prev_index={prev_log_index}, "
-                f"prev_term={prev_log_term}"
-            )
-        else:
-
-            success = True
-
-
-            if entries:
-                for entry_data in entries:
-                    entry = LogEntry.from_dict(entry_data)
-
-
-                    if entry.index < len(self.log):
-                        if self.log[entry.index].term != entry.term:
-                            self.log = self.log[:entry.index]
-
-                    if entry.index == len(self.log):
+        
+        if prev_log_index >= 0:
+            if len(self.log) <= prev_log_index:
+                return {"term": self.current_term, "success": False}
+            if self.log[prev_log_index]["term"] != prev_log_term:
+                
+                self.log = self.log[:prev_log_index]
+                return {"term": self.current_term, "success": False}
+        
+        
+        if entries:
+            logger.info(f"[APPEND_ENTRIES] Received {len(entries)} entries from leader {leader_id}")
+            
+            
+            
+            
+            
+            
+            current_idx = prev_log_index + 1
+            for entry in entries:
+                if len(self.log) > current_idx:
+                    if self.log[current_idx]["term"] != entry["term"]:
+                        self.log = self.log[:current_idx]
                         self.log.append(entry)
-                        await self._persist_log_entry(entry)
+                else:
+                    self.log.append(entry)
+                current_idx += 1
+            logger.info(f"[APPEND_ENTRIES] Log now has {len(self.log)} entries")
 
-            if leader_commit > self.commit_index:
-                old_commit = self.commit_index
-                self.commit_index = min(leader_commit, len(self.log) - 1)
+        
+        if leader_commit > self.commit_index:
+            old_commit = self.commit_index
+            self.commit_index = min(leader_commit, len(self.log) - 1)
+            logger.info(f"[APPEND_ENTRIES] Updated commit_index from {old_commit} to {self.commit_index}")
+        elif leader_commit >= 0 and len(self.log) > 0:
+            
+            self.commit_index = min(leader_commit, len(self.log) - 1)
+            logger.info(f"[APPEND_ENTRIES] Set commit_index to {self.commit_index} (leader_commit={leader_commit}, log_len={len(self.log)})")
+            
+        return {"term": self.current_term, "success": True}
 
-
-                if self.commit_index > old_commit:
-                    await self._apply_committed_entries(old_commit + 1, self.commit_index + 1)
-
-        response = {
-            "term": self.current_term,
-            "success": success,
-            "from_node": self.node_id
-        }
-
-        if not success:
-            response["log_length"] = len(self.log)
-            response["last_log_term"] = self.log[-1].term if self.log else 0
-
-        return response
-
-    async def _apply_committed_entries(self, start_index: int, end_index: int):
-
-        for i in range(start_index, end_index):
-            if i < len(self.log):
-                entry = self.log[i]
-
-
-                await self._apply_command(entry.command)
-
-                self.last_applied = i
-
-    async def _apply_command(self, command: dict):
-        cmd_type = command.get("type")
-
-        if cmd_type == "set":
-            key = command.get("key")
-            value = command.get("value")
-            self.state_machine[key] = value
-
-        elif cmd_type == "delete":
-            key = command.get("key")
-            self.state_machine.pop(key, None)
-
-        elif cmd_type == "add_node":
-            node_id = command.get("node_id")
-            address = command.get("address")
-            port = command.get("port")
-
-            if node_id and address and port:
-                new_node = NodeInfo(id=node_id, address=address, port=port)
-                self.add_cluster_node(new_node)
-
-                key = f"cluster:nodes:{node_id}"
-                self.state_machine[key] = {
-                    "id": node_id,
-                    "address": address,
-                    "port": port
-                }
-                logger.info(f"Comando add_node aplicado: {node_id}")
-
-        elif cmd_type == "remove_node":
-            node_id = command.get("node_id")
-            if node_id:
-                self.remove_cluster_node(node_id)
-                key = f"cluster:nodes:{node_id}"
-                self.state_machine.pop(key, None)
-                logger.info(f"Comando remove_node aplicado: {node_id}")
-
-        if self._on_command_applied:
+    def add_peer(self, node: NodeInfo):
+        self.peers[node.id] = node
+        self.reachable_peers.add(node.id)
+        
+        if node.id not in self.next_index:
+            self.next_index[node.id] = 0
+        if node.id not in self.match_index:
+            self.match_index[node.id] = -1
+        
+        
+        if self.is_leader():
+            asyncio.create_task(self._sync_new_peer(node))
+    
+    async def _sync_new_peer(self, peer: NodeInfo):
+        
+        logger.info(f"[SYNC] Starting full synchronization for new peer {peer.id}")
+        
+        try:
+            
+            
+            
+            
+            
+            from .replication import get_replication_manager
+            from app.core.database import SessionLocal
+            from app.models.music import Music
+            
+            replication_manager = get_replication_manager()
+            db = SessionLocal()
+            
             try:
-                await self._on_command_applied(command)
-            except Exception as e:
-                logger.error(f"Error aplicando comando: {e}", exc_info=True)
+                
+                all_songs = db.query(Music).all()
+                logger.info(f"[SYNC] Found {len(all_songs)} songs to sync to {peer.id}")
+                
+                
+                for song in all_songs:
+                    if not song.url:
+                        logger.warning(f"[SYNC] Song {song.nombre} has no URL, skipping file sync")
+                        continue
+                        
+                    file_id = song.url.split('/')[-1]  
+                    
+                    if file_id == "null" or not file_id:
+                        logger.warning(f"[SYNC] Song {song.nombre} has invalid file_id '{file_id}' from url '{song.url}', skipping")
+                        continue
+                        
+                    file_path = replication_manager.storage_path / file_id
+                    
+                    if file_path.exists():
+                        metadata = {
+                            "file_id": file_id,
+                            "nombre": song.nombre,
+                            "autor": song.autor,
+                            "album": song.album,
+                            "genero": song.genero,
+                            "url": song.url,
+                            "file_size": song.file_size,
+                            "partition_id": song.partition_id,
+                            "epoch_number": song.epoch_number
+                        }
+                        
+                        await self._send_file_to_peer(peer, file_path, metadata)
+                    else:
+                        logger.warning(f"[SYNC] File {file_id} not found locally for song {song.nombre}")
+                
+                logger.info(f"[SYNC] Completed full synchronization for peer {peer.id}")
+                
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"[SYNC] Error synchronizing peer {peer.id}: {e}", exc_info=True)
+    
+    async def _send_file_to_peer(self, peer: NodeInfo, file_path, metadata: dict):
+        
+        import httpx
+        import json
+        
+        try:
+            url = f"http:
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                with open(file_path, 'rb') as f:
+                    files = {'file': f}
+                    data = {'metadata': json.dumps(metadata)}
+                    
+                    logger.info(f"[SYNC] Sending file {metadata['file_id']} ({metadata['nombre']}) to {peer.id}")
+                    resp = await client.post(url, files=files, data=data)
+                    
+                    if resp.status_code == 200:
+                        logger.info(f"[SYNC] Successfully sent {metadata['file_id']} to {peer.id}")
+                    else:
+                        logger.warning(f"[SYNC] Failed to send {metadata['file_id']} to {peer.id}: status {resp.status_code}")
+                        
+        except Exception as e:
+            logger.error(f"[SYNC] Error sending file to {peer.id}: {e}")
+    
+    async def _initiate_leader_side_merge(self, peer: NodeInfo):
+        
+        logger.info(f"[MERGE_LEADER] Initiating leader-side merge with former partition leader {peer.id}")
+        
+        
+        
+        
+        
+        await asyncio.sleep(1)
+        logger.info(f"[MERGE_LEADER] Merge coordination with {peer.id} in progress via bidirectional endpoint")
+    
+    async def _handle_partition_merge(self, new_leader_id: str):
+        
+        logger.info(f"[MERGE] Starting bidirectional partition merge with leader {new_leader_id}")
+        
+        try:
+            import httpx
+            from app.core.database import SessionLocal
+            from app.models.music import Music
+            from .replication import get_replication_manager
+            
+            db = SessionLocal()
+            replication_manager = get_replication_manager()
+            
+            try:
+                
+                our_songs = db.query(Music).all()
+                our_log_entries = [
+                    {
+                        "term": entry.get("term"),
+                        "command": entry.get("command")
+                    }
+                    for entry in self.log
+                ]
+                
+                logger.info(f"[MERGE] Our partition: {len(our_songs)} songs, {len(our_log_entries)} log entries, term={self.current_term}")
+                
+                
+                leader_peer = None
+                for peer in self.peers.values():
+                    if peer.id == new_leader_id:
+                        leader_peer = peer
+                        break
+                
+                if not leader_peer:
+                    logger.error(f"[MERGE] Could not find leader {new_leader_id} in peers")
+                    return
+                
+                
+                merge_data = {
+                    "node_id": self.node_id,
+                    "our_term": self.current_term,
+                    "our_log": our_log_entries,
+                    "partition_songs": [
+                        {
+                            "nombre": song.nombre,
+                            "autor": song.autor,
+                            "album": song.album,
+                            "genero": song.genero,
+                            "url": song.url,
+                            "file_size": song.file_size,
+                            "partition_id": song.partition_id,
+                            "epoch_number": song.epoch_number,
+                            "created_at": song.created_at.isoformat() if song.created_at else None
+                        }
+                        for song in our_songs
+                    ]
+                }
+                
+                url = f"http:
+                
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    logger.info(f"[MERGE] Sending bidirectional merge request to leader {new_leader_id}")
+                    resp = await client.post(url, json=merge_data)
+                    
+                    if resp.status_code == 200:
+                        result = resp.json()
+                        logger.info(f"[MERGE] Merge response received from leader")
+                        
+                        
+                        files_we_need = result.get("files_you_need", [])
+                        songs_we_need = result.get("songs_you_need", [])
+                        
+                        logger.info(f"[MERGE] We need {len(files_we_need)} files and {len(songs_we_need)} songs from leader")
+                        if len(files_we_need) != len(songs_we_need):
+                            logger.warning(f"[MERGE] Mismatch between files needed ({len(files_we_need)}) and songs needed ({len(songs_we_need)}). This might indicate metadata sync issues.")
+                        
+                        
+                        logger.info(f"[MERGE] Starting metadata synchronization for {len(songs_we_need)} songs")
+                        for song_data in songs_we_need:
+                            existing = db.query(Music).filter(Music.url == song_data["url"]).first()
+                            if not existing:
+                                logger.info(f"[MERGE] Creating metadata for song: {song_data['nombre']} (URL: {song_data['url']})")
+                                from app.services.music_service import MusicService
+                                from app.schemas.music import MusicCreate
+                                
+                                music_data = MusicCreate(
+                                    nombre=song_data["nombre"],
+                                    autor=song_data["autor"],
+                                    album=song_data.get("album"),
+                                    genero=song_data.get("genero")
+                                )
+                                
+                                MusicService.create_music(
+                                    db,
+                                    music_data,
+                                    url=song_data["url"],
+                                    file_size=song_data["file_size"],
+                                    partition_id=song_data.get("partition_id"),
+                                    epoch_number=song_data.get("epoch_number")
+                                )
+                                logger.info(f"[MERGE] Successfully added metadata for: {song_data['nombre']}")
+                            else:
+                                logger.info(f"[MERGE] Metadata already exists for: {song_data['nombre']} (skipping)")
+                        
+                        
+                        logger.info(f"[MERGE] Starting physical file synchronization for {len(files_we_need)} files")
+                        for file_id in files_we_need:
+                            if file_id == "null" or not file_id:
+                                logger.error(f"[MERGE] Skipping invalid file_id '{file_id}'. This explains why physical file might be copied with null name but metadata failed.")
+                                continue
+                                
+                            try:
+                                file_url = f"http:
+                                logger.info(f"[MERGE] Requesting physical file {file_id} from leader")
+                                
+                                file_resp = await client.get(file_url, timeout=60.0)
+                                if file_resp.status_code == 200:
+                                    file_path = replication_manager.storage_path / file_id
+                                    async with aiofiles.open(file_path, 'wb') as f:
+                                        await f.write(file_resp.content)
+                                    logger.info(f"[MERGE] Successfully downloaded physical file {file_id} from leader")
+                                else:
+                                    logger.warning(f"[MERGE] Failed to download {file_id}: status {file_resp.status_code}. Metadata exists but physical file missing on leader?")
+                            except Exception as e:
+                                logger.error(f"[MERGE] Error downloading file {file_id}: {e}")
+                        
+                        
+                        files_to_send = result.get("files_we_need", [])
+                        logger.info(f"[MERGE] Leader needs {len(files_to_send)} files from us (Reverse Sync)")
+                        
+                        for file_id in files_to_send:
+                            song = next((s for s in our_songs if file_id in s.url), None)
+                            if song:
+                                file_path = replication_manager.storage_path / file_id
+                                if file_path.exists():
+                                    metadata = {
+                                        "file_id": file_id,
+                                        "nombre": song.nombre,
+                                        "autor": song.autor,
+                                        "album": song.album,
+                                        "genero": song.genero,
+                                        "url": song.url,
+                                        "file_size": song.file_size
+                                    }
+                                    await self._send_file_to_peer(leader_peer, file_path, metadata)
+                                    logger.info(f"[MERGE] Sent file {file_id} to leader")
+                        
+                        logger.info(f"[MERGE] Bidirectional partition merge completed successfully")
+                    else:
+                        logger.error(f"[MERGE] Merge request failed with status {resp.status_code}")
+                        
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"[MERGE] Error during partition merge: {e}", exc_info=True)
 
-    async def submit_command(self, command: dict, timeout: float = 10.0) -> bool:
+    def is_leader(self):
+        return self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER, RaftState.SOLO]
 
-        if not self.is_leader():
-            raise Exception(f"No soy líder, líder actual: {self.leader_id}")
+    def get_all_nodes(self):
+        return list(self.peers.values()) + [NodeInfo(id=self.node_id, address=self.address, port=self.port)]
 
+    def get_alive_nodes(self):
+        return [p for p in self.peers.values() if p.id in self.reachable_peers] + [NodeInfo(id=self.node_id, address=self.address, port=self.port)]
 
-        entry = LogEntry(
-            term=self.current_term,
-            index=len(self.log),
-            command=command
-        )
-        self.log.append(entry)
-        await self._persist_log_entry(entry)
-
-
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-
-            replicated_count = 1
-            for peer_id, match_idx in self.match_index.items():
-                if match_idx >= entry.index:
-                    replicated_count += 1
-
-
-            if replicated_count >= (len(self.cluster_nodes) + 1) // 2 + 1:
-
-                self.commit_index = entry.index
-                await self._apply_committed_entries(self.last_applied + 1, self.commit_index + 1)
-                return True
-
-            await asyncio.sleep(0.1)
-
-        logger.warning(f"Timeout esperando replicación de comando: {command}")
-        return False
-
-    def is_leader(self) -> bool:
-        return self.state == NodeState.LEADER
-
-    def get_leader(self) -> Optional[str]:
+    def get_leader(self):
         return self.leader_id
 
-    def can_serve_read(self) -> bool:
-        return self._running and (self.leader_id is not None or self.is_leader())
+    @property
+    def partition_id(self):
+        
+        return self.leader_id if self.leader_id else "unknown"
 
-    def get_eventual_read_status(self) -> dict:
+    @property
+    def epoch_number(self):
+        return self.current_term
+
+    def can_serve_read(self):
+        
+        return self.leader_id is not None
+
+    def get_eventual_read_status(self):
         return {
+            "lag": self.commit_index - self.last_applied,
             "commit_index": self.commit_index,
-            "last_applied": self.last_applied,
-            "lag": max(0, self.commit_index - self.last_applied)
+            "last_applied": self.last_applied
         }
 
-    def get_status(self) -> dict:
+    async def submit_command(self, command: dict, timeout: float = 10.0):
+        if not self.is_leader():
+            return False
+        
+        entry = {"term": self.current_term, "command": command}
+        self.log.append(entry)
+        last_log_index = len(self.log) - 1
+        
+        
+        if self.state == RaftState.SOLO:
+            self.commit_index = last_log_index
+            return True
+            
+        
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            
+            await self.send_heartbeats()
+            
+            if self.state in [RaftState.LEADER, RaftState.PARTITION_LEADER]:
+                 
+                 
+                 replication_count = 1 
+                 for peer_id in self.reachable_peers:
+                     if self.match_index.get(peer_id, -1) >= last_log_index:
+                         replication_count += 1
+                 
+                 
+                 total_reachable = len(self.reachable_peers) + 1
+                 needed = (total_reachable 
+                 
+                 if replication_count >= needed:
+                     self.commit_index = last_log_index
+                     return True
+            else:
+                
+                return False
+            
+            await asyncio.sleep(0.1)
+            
+        return False
 
-        return {
-            "node_id": self.node_id,
-            "state": self.state.value,
-            "term": self.current_term,
-            "leader_id": self.leader_id,
-            "log_size": len(self.log),
-            "commit_index": self.commit_index,
-            "last_applied": self.last_applied,
-            "cluster_size": len(self.cluster_nodes) + 1
-        }
-
-    def set_callbacks(
-            self,
-            on_become_leader: Optional[Callable[[], Awaitable[None]]] = None,
-            on_lose_leadership: Optional[Callable[[], Awaitable[None]]] = None,
-            on_command_applied: Optional[Callable[[dict], Awaitable[None]]] = None
-    ):
-
-        self._on_become_leader = on_become_leader
-        self._on_lose_leadership = on_lose_leadership
-        self._on_command_applied = on_command_applied
-
-
-
-_raft_node: Optional[RaftNode] = None
-
-
-def initialize_raft(
-        node_id: str,
-        node_info: NodeInfo,
-        cluster_nodes: List[NodeInfo],
-        data_dir: str = "/data/raft",
-        **kwargs
-) -> RaftNode:
-
-    global _raft_node
-    _raft_node = RaftNode(
-        node_id=node_id,
-        node_info=node_info,
-        cluster_nodes=cluster_nodes,
-        data_dir=data_dir,
-        **kwargs
-    )
-    return _raft_node
-
-
-def get_raft_node() -> RaftNode:
-
-    if _raft_node is None:
-        raise RuntimeError("Raft Node no inicializado")
-    return _raft_node
+def get_raft_node():
+    return RaftNode.get_instance()

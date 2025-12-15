@@ -9,6 +9,7 @@ from app.utils.file_handler import FileHandler
 from app.distributed.communication import get_p2p_client, P2PException
 from pathlib import Path
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,13 @@ async def upload_music(
                 )
 
             leader_node = None
-            if hasattr(request.app.state, "discovery"):
-                discovery = request.app.state.discovery
-                leader_node = discovery.get_node_by_id(leader_id)
+            if leader_id in raft_node.peers:
+                leader_node = raft_node.peers[leader_id]
+            
+            
+            if not leader_node and leader_id == raft_node.node_id:
+                 
+                 pass
 
             if not leader_node:
                 raise HTTPException(
@@ -102,7 +107,11 @@ async def upload_music(
                 "genero": genero,
                 "url": url,
                 "file_size": file_size,
-                "filename": filename
+                "filename": filename,
+                "partition_id": raft_node.partition_id,
+                "epoch_number": raft_node.epoch_number,
+                "conflict_flag": None,
+                "merge_timestamp": time.time()
             }
 
             success = await raft_node.submit_command(metadata_command, timeout=10.0)
@@ -125,7 +134,11 @@ async def upload_music(
                         metadata={
                             "url": url,
                             "nombre": nombre,
-                            "autor": autor
+                            "autor": autor,
+                            "album": album,
+                            "genero": genero,
+                            "partition_id": raft_node.partition_id,
+                            "epoch_number": raft_node.epoch_number
                         }
                     )
                 except Exception as rep_e:
@@ -166,6 +179,10 @@ async def upload_music(
 async def list_music(
         skip: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=100),
+        q: Optional[str] = Query(None, description="Búsqueda general por nombre, autor o álbum"),
+        genero: Optional[str] = Query(None, description="Filtrar por género"),
+        autor: Optional[str] = Query(None, description="Filtrar por autor"),
+        album: Optional[str] = Query(None, description="Filtrar por álbum"),
         db: Session = Depends(get_db),
         request: Request = None
 ):
@@ -184,6 +201,11 @@ async def list_music(
                 f"(commit={read_status['commit_index']}, applied={read_status['last_applied']})"
             )
 
+    
+    if q or genero or autor or album:
+        return MusicService.search_music(db, q or "", genero, autor, album)
+    
+    
     return MusicService.get_all_music(db, skip, limit)
 
 @router.get("/{music_id}", response_model=MusicResponse)

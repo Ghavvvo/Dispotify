@@ -21,7 +21,7 @@ function getProxyIP() {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
-      // Skip internal and non-IPv4 addresses
+      
       if (iface.family === 'IPv4' && !iface.internal) {
         return iface.address;
       }
@@ -45,7 +45,7 @@ async function resolveClusterIPs() {
 }
 
 async function queryNodeForLeader(ip) {
-  const url = `http://${ip}:${BACKEND_PORT}${LEADER_ENDPOINT}`;
+  const url = `http:
   try {
     const response = await axios.get(url, { timeout: REQUEST_TIMEOUT });
     console.log(`Node ${ip} responded:`, response.data);
@@ -167,7 +167,7 @@ app.use('/api', express.json());
 app.use('/api', express.urlencoded({ extended: true }));
 
 app.use('/api', createProxyMiddleware({
-  target: 'http://placeholder', // Will be overridden by router
+  target: 'http:
   changeOrigin: true,
   pathRewrite: (path, req) => {
     if (!path.endsWith('/') && !path.includes('.') && !path.includes('?') && !path.includes('/upload')) {
@@ -179,7 +179,7 @@ app.use('/api', createProxyMiddleware({
   router: async (req) => {
     try {
       const leader = await getCachedLeader();
-      const target = `http://${leader.leaderHost}:${leader.leaderPort}`;
+      const target = `http:
       const timestamp = new Date().toISOString();
 
       console.log(`\n${'='.repeat(100)}`);
@@ -302,12 +302,12 @@ app.use('/api', createProxyMiddleware({
 }));
 
 app.use('/static', createProxyMiddleware({
-  target: 'http://placeholder',
+  target: 'http:
   changeOrigin: true,
   router: async (req) => {
     try {
       const leader = await getCachedLeader();
-      const target = `http://${leader.leaderHost}:${leader.leaderPort}`;
+      const target = `http:
       console.log(`[PROXY] Static file ${req.url} → ${target}`);
       return target;
     } catch (error) {

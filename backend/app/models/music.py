@@ -16,6 +16,10 @@ class Music(Base):
     format = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    partition_id = Column(String, index=True)
+    epoch_number = Column(Integer, default=0)
+    conflict_flag = Column(String)
+    merge_timestamp = Column(Float)
 
     def __repr__(self):
         return f"<Music {self.nombre} by {self.autor}>"
