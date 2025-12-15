@@ -1,0 +1,14 @@
+{
+  "name": "leader-resolver",
+  "version": "1.0.0",
+  "description": "Discovery/Leader resolver service for Docker Swarm cluster",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "http-proxy-middleware": "^2.0.6"
+  }
+}
