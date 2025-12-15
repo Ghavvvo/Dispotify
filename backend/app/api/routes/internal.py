@@ -5,6 +5,10 @@ from pydantic import BaseModel
 from app.distributed.replication import get_replication_manager
 from app.distributed.raft import get_raft_node
 from app.distributed.communication import NodeInfo
+from app.core.database import SessionLocal
+from app.services.music_service import MusicService
+from app.schemas.music import MusicCreate
+from app.models.music import Music
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +210,38 @@ async def receive_replicated_file(
         
         replication_manager = get_replication_manager()
         result = await replication_manager.receive_file(file_data, metadata_dict)
+        
+        # Try to insert metadata into DB if present (Recovery/Sync mechanism)
+        # This handles the case where Raft log is lost or lagging but file is replicated
+        if "url" in metadata_dict and "nombre" in metadata_dict and "autor" in metadata_dict:
+            try:
+                db = SessionLocal()
+                try:
+                    # Check if exists
+                    existing = db.query(Music).filter(Music.url == metadata_dict["url"]).first()
+                    if not existing:
+                        logger.info(f"[REPLICATION] Inserting missing metadata for {metadata_dict['url']}")
+                        music_data = MusicCreate(
+                            nombre=metadata_dict["nombre"],
+                            autor=metadata_dict["autor"],
+                            album=metadata_dict.get("album"),
+                            genero=metadata_dict.get("genero")
+                        )
+                        
+                        MusicService.create_music(
+                            db, 
+                            music_data, 
+                            url=metadata_dict["url"], 
+                            file_size=result["file_size"],
+                            partition_id=metadata_dict.get("partition_id"),
+                            epoch_number=metadata_dict.get("epoch_number")
+                        )
+                    else:
+                        logger.info(f"[REPLICATION] Metadata already exists for {metadata_dict['url']}")
+                finally:
+                    db.close()
+            except Exception as db_e:
+                logger.error(f"[REPLICATION] Error inserting metadata: {db_e}")
         
         return {
             "success": True,

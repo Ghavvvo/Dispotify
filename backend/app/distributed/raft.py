@@ -504,7 +504,9 @@ class RaftNode:
                             "album": song.album,
                             "genero": song.genero,
                             "url": song.url,
-                            "file_size": song.file_size
+                            "file_size": song.file_size,
+                            "partition_id": song.partition_id,
+                            "epoch_number": song.epoch_number
                         }
                         
                         await self._send_file_to_peer(peer, file_path, metadata)

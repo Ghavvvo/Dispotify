@@ -134,7 +134,11 @@ async def upload_music(
                         metadata={
                             "url": url,
                             "nombre": nombre,
-                            "autor": autor
+                            "autor": autor,
+                            "album": album,
+                            "genero": genero,
+                            "partition_id": raft_node.partition_id,
+                            "epoch_number": raft_node.epoch_number
                         }
                     )
                 except Exception as rep_e:
