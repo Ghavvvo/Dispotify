@@ -109,7 +109,7 @@ async function getCachedLeader() {
   }
 
   if (cachedLeader && cachedLeader.leaderHost !== result.leader.leaderHost) {
-    console.warn(`⚠️ Leader changed: ${cachedLeader.leaderHost} → ${result.leader.leaderHost}`);
+    console.warn(`Leader changed: ${cachedLeader.leaderHost} → ${result.leader.leaderHost}`);
   }
 
   cachedLeader = result.leader;
@@ -183,7 +183,7 @@ app.use('/api', createProxyMiddleware({
       const timestamp = new Date().toISOString();
       
       console.log(`\n${'='.repeat(100)}`);
-      console.log(`[${timestamp}] 📥 FRONTEND REQUEST`);
+      console.log(`[${timestamp}] FRONTEND REQUEST`);
       console.log(`  Method: ${req.method}`);
       console.log(`  URL: ${req.url}`);
       console.log(`  Headers: ${JSON.stringify(req.headers, null, 2)}`);
@@ -193,14 +193,14 @@ app.use('/api', createProxyMiddleware({
       } else {
         console.log(`  Body: (empty)`);
       }
-      
-      console.log(`\n🔄 PROXYING TO BACKEND`);
+
+      console.log(`\nPROXYING TO BACKEND`);
       console.log(`  Target URL: ${target}${req.url}`);
       console.log(`  Method: ${req.method}`);
       
       return target;
     } catch (error) {
-      console.error(`[PROXY] ❌ Failed to resolve leader: ${error.message}`);
+      console.error(`[PROXY] Failed to resolve leader: ${error.message}`);
       throw error;
     }
   },
@@ -218,7 +218,7 @@ app.use('/api', createProxyMiddleware({
   onError: (err, req, res) => {
     const timestamp = new Date().toISOString();
     console.error(`\n${'!'.repeat(100)}`);
-    console.error(`[${timestamp}] ❌ PROXY ERROR`);
+    console.error(`[${timestamp}]  PROXY ERROR`);
     console.error(`  Method: ${req.method}`);
     console.error(`  URL: ${req.url}`);
     console.error(`  Error: ${err.message}`);
