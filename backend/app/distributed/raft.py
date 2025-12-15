@@ -612,33 +612,42 @@ class RaftNode:
                         if len(files_we_need) != len(songs_we_need):
                             logger.warning(f"[MERGE] Mismatch between files needed ({len(files_we_need)}) and songs needed ({len(songs_we_need)}). This might indicate metadata sync issues.")
                         
-                        # Step 4: Apply missing songs from leader to our database
-                        logger.info(f"[MERGE] Starting metadata synchronization for {len(songs_we_need)} songs")
-                        for song_data in songs_we_need:
-                            existing = db.query(Music).filter(Music.url == song_data["url"]).first()
-                            if not existing:
-                                logger.info(f"[MERGE] Creating metadata for song: {song_data['nombre']} (URL: {song_data['url']})")
-                                from app.services.music_service import MusicService
-                                from app.schemas.music import MusicCreate
-                                
-                                music_data = MusicCreate(
-                                    nombre=song_data["nombre"],
-                                    autor=song_data["autor"],
-                                    album=song_data.get("album"),
-                                    genero=song_data.get("genero")
-                                )
-                                
-                                MusicService.create_music(
-                                    db,
-                                    music_data,
-                                    url=song_data["url"],
-                                    file_size=song_data["file_size"],
-                                    partition_id=song_data.get("partition_id"),
-                                    epoch_number=song_data.get("epoch_number")
-                                )
-                                logger.info(f"[MERGE] Successfully added metadata for: {song_data['nombre']}")
+                        # Step 4: The metadata will be synchronized via Raft log replication
+                        # The leader has already added these songs to the Raft log
+                        # We just need to wait for the log entries to be applied
+                        # The apply_loop will handle creating the metadata in our database
+                        logger.info(f"[MERGE] Metadata for {len(songs_we_need)} songs will be synchronized via Raft log replication")
+                        logger.info(f"[MERGE] Current commit_index={self.commit_index}, last_applied={self.last_applied}, log_length={len(self.log)}")
+                        
+                        # Wait a bit for log entries to be applied
+                        max_wait = 30  # seconds
+                        waited = 0
+                        initial_applied = self.last_applied
+                        
+                        while waited < max_wait:
+                            await asyncio.sleep(1)
+                            waited += 1
+                            
+                            # Check if we've applied new entries
+                            if self.last_applied > initial_applied:
+                                logger.info(f"[MERGE] Progress: last_applied increased from {initial_applied} to {self.last_applied}")
+                            
+                            # Check if all expected songs now exist in our database
+                            db.expire_all()  # Refresh the session to see new data
+                            missing_count = 0
+                            for song_data in songs_we_need:
+                                existing = db.query(Music).filter(Music.url == song_data["url"]).first()
+                                if not existing:
+                                    missing_count += 1
+                            
+                            if missing_count == 0:
+                                logger.info(f"[MERGE] All {len(songs_we_need)} songs now exist in database after {waited}s")
+                                break
                             else:
-                                logger.info(f"[MERGE] Metadata already exists for: {song_data['nombre']} (skipping)")
+                                logger.info(f"[MERGE] Still waiting for {missing_count}/{len(songs_we_need)} songs to be applied (waited {waited}s)")
+                        
+                        if missing_count > 0:
+                            logger.warning(f"[MERGE] Timeout waiting for metadata sync. {missing_count}/{len(songs_we_need)} songs still missing after {max_wait}s")
                         
                         # Step 5: Request files we need from leader
                         logger.info(f"[MERGE] Starting physical file synchronization for {len(files_we_need)} files")
