@@ -38,13 +38,13 @@ class CommunicationLayer:
                 return response.json()
             return None
         except Exception as e:
-            # logger.debug(f"RPC failed to {target_node.id}: {e}")
+            
             return None
 
     def discover_nodes(self, service_name: str = "dispotify-cluster") -> List[str]:
-        """Resolve DNS to find other nodes IPs."""
+        
         try:
-            # In Docker Swarm, looking up the service name returns multiple IPs
+            
             _, _, ip_list = socket.gethostbyname_ex(service_name)
             return ip_list
         except socket.gaierror:

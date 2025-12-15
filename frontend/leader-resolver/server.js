@@ -6,7 +6,6 @@ const os = require('os');
 
 const app = express();
 
-// Configuration from environment variables
 const CLUSTER_DNS_NAME = process.env.CLUSTER_DNS_NAME || 'dispotify-cluster';
 const BACKEND_PORT = parseInt(process.env.BACKEND_PORT, 10) || 8000;
 const LEADER_ENDPOINT = process.env.LEADER_ENDPOINT || '/cluster/leader';
@@ -14,13 +13,10 @@ const SERVICE_PORT = parseInt(process.env.SERVICE_PORT, 10) || 3000;
 const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT, 10) || 3000;
 const LEADER_CACHE_TTL = parseInt(process.env.LEADER_CACHE_TTL, 10) || 5000;
 
-// Get proxy information
 const PROXY_HOSTNAME = os.hostname();
 const PROXY_IP = getProxyIP();
 
-/**
- * Get the proxy's IP address
- */
+
 function getProxyIP() {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
@@ -34,13 +30,9 @@ function getProxyIP() {
   return 'unknown';
 }
 
-// Cache for leader information
 let cachedLeader = null;
 let lastLeaderCheck = 0;
 
-/**
- * Resolve all IPs associated with the cluster DNS name
- */
 async function resolveClusterIPs() {
   try {
     const addresses = await dns.resolve4(CLUSTER_DNS_NAME);
@@ -52,9 +44,6 @@ async function resolveClusterIPs() {
   }
 }
 
-/**
- * Query a single node for its leader information
- */
 async function queryNodeForLeader(ip) {
   const url = `http://${ip}:${BACKEND_PORT}${LEADER_ENDPOINT}`;
   try {
@@ -67,9 +56,7 @@ async function queryNodeForLeader(ip) {
   }
 }
 
-/**
- * Discover the cluster leader by querying all nodes and voting
- */
+
 async function discoverLeader() {
   const ips = await resolveClusterIPs();
   
@@ -77,10 +64,8 @@ async function discoverLeader() {
     return { error: 'No cluster nodes found', leader: null };
   }
 
-  // Query all nodes in parallel
   const responses = await Promise.all(ips.map(ip => queryNodeForLeader(ip)));
   
-  // Count votes for each leader
   const votes = {};
   
   for (const response of responses) {
@@ -92,7 +77,6 @@ async function discoverLeader() {
 
   console.log('Leader votes:', votes);
 
-  // Find the leader with most votes
   let maxVotes = 0;
   let electedLeader = null;
 
@@ -110,30 +94,24 @@ async function discoverLeader() {
   return { leader: electedLeader, votes, totalNodes: ips.length };
 }
 
-/**
- * Get the current leader with caching
- */
+
 async function getCachedLeader() {
   const now = Date.now();
   
-  // Return cached leader if still valid
   if (cachedLeader && (now - lastLeaderCheck) < LEADER_CACHE_TTL) {
     return cachedLeader;
   }
 
-  // Discover new leader
   const result = await discoverLeader();
   
   if (!result.leader) {
     throw new Error('No leader available');
   }
 
-  // Detect leader change
   if (cachedLeader && cachedLeader.leaderHost !== result.leader.leaderHost) {
     console.warn(`⚠️ Leader changed: ${cachedLeader.leaderHost} → ${result.leader.leaderHost}`);
   }
 
-  // Update cache
   cachedLeader = result.leader;
   lastLeaderCheck = now;
   
@@ -142,7 +120,6 @@ async function getCachedLeader() {
   return cachedLeader;
 }
 
-// Enable CORS for all routes
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -155,12 +132,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'leader-proxy' });
 });
 
-// Info endpoint to get the cluster leader (for debugging)
 app.get('/cluster/leader', async (req, res) => {
   try {
     const result = await discoverLeader();
@@ -188,17 +163,13 @@ app.get('/cluster/leader', async (req, res) => {
   }
 });
 
-// Middleware to capture request body
 app.use('/api', express.json());
 app.use('/api', express.urlencoded({ extended: true }));
 
-// Dynamic proxy middleware - proxies all API requests to the current leader
 app.use('/api', createProxyMiddleware({
   target: 'http://placeholder', // Will be overridden by router
   changeOrigin: true,
   pathRewrite: (path, req) => {
-    // Add trailing slash if missing for FastAPI compatibility
-    // BUT NOT for upload endpoints or endpoints that already have trailing slash
     if (!path.endsWith('/') && !path.includes('.') && !path.includes('?') && !path.includes('/upload')) {
       console.log(`[PATH REWRITE] Adding trailing slash: ${path} → ${path}/`);
       return path + '/';
@@ -217,7 +188,6 @@ app.use('/api', createProxyMiddleware({
       console.log(`  URL: ${req.url}`);
       console.log(`  Headers: ${JSON.stringify(req.headers, null, 2)}`);
       
-      // Log request body if present
       if (req.body && Object.keys(req.body).length > 0) {
         console.log(`  Body: ${JSON.stringify(req.body, null, 2)}`);
       } else {
@@ -235,7 +205,6 @@ app.use('/api', createProxyMiddleware({
     }
   },
   onProxyReq: (proxyReq, req, res) => {
-    // Re-send body if it was parsed
     if (req.body && Object.keys(req.body).length > 0) {
       const bodyData = JSON.stringify(req.body);
       proxyReq.setHeader('Content-Type', 'application/json');
@@ -255,12 +224,10 @@ app.use('/api', createProxyMiddleware({
     console.error(`  Error: ${err.message}`);
     console.error(`${'!'.repeat(100)}\n`);
     
-    // Invalidate leader cache on error to force rediscovery
-    console.warn('⚠️ Invalidating leader cache due to proxy error');
+    console.warn('Invalidating leader cache due to proxy error');
     cachedLeader = null;
     lastLeaderCheck = 0;
     
-    // Only send response if headers haven't been sent yet
     if (!res.headersSent) {
       res.status(503).json({
         error: 'Service Unavailable',
@@ -273,12 +240,10 @@ app.use('/api', createProxyMiddleware({
     const timestamp = new Date().toISOString();
     const contentLength = proxyRes.headers['content-length'] || '?';
     
-    // Add proxy information headers
     res.setHeader('X-Proxy-Hostname', PROXY_HOSTNAME);
     res.setHeader('X-Proxy-IP', PROXY_IP);
     res.setHeader('X-Proxy-Port', SERVICE_PORT.toString());
     
-    // Preserve backend node headers (they come from the backend response)
     if (proxyRes.headers['x-node-id']) {
       res.setHeader('X-Backend-Node-ID', proxyRes.headers['x-node-id']);
     }
@@ -292,7 +257,6 @@ app.use('/api', createProxyMiddleware({
       res.setHeader('X-Backend-Node-Port', proxyRes.headers['x-node-port']);
     }
     
-    // Expose these headers to CORS
     const existingExposeHeaders = res.getHeader('Access-Control-Expose-Headers') || '';
     const newExposeHeaders = [
       existingExposeHeaders,
@@ -306,31 +270,28 @@ app.use('/api', createProxyMiddleware({
     ].filter(Boolean).join(', ');
     res.setHeader('Access-Control-Expose-Headers', newExposeHeaders);
     
-    // Capture response body from backend
     let backendResponseBody = '';
     proxyRes.on('data', (chunk) => {
       backendResponseBody += chunk.toString('utf8');
     });
     
     proxyRes.on('end', () => {
-      console.log(`\n📤 BACKEND RESPONSE`);
+      console.log(`\n BACKEND RESPONSE`);
       console.log(`  Status: ${proxyRes.statusCode} ${proxyRes.statusMessage}`);
       console.log(`  Content-Type: ${proxyRes.headers['content-type'] || 'unknown'}`);
       console.log(`  Content-Length: ${contentLength} bytes`);
       console.log(`  Backend Node ID: ${proxyRes.headers['x-node-id'] || 'unknown'}`);
       console.log(`  Backend Node Hostname: ${proxyRes.headers['x-node-hostname'] || 'unknown'}`);
       
-      // Try to parse and pretty print JSON
       try {
         const jsonData = JSON.parse(backendResponseBody);
         console.log(`  Body: ${JSON.stringify(jsonData, null, 2)}`);
       } catch (e) {
-        // Not JSON, show truncated
         const preview = backendResponseBody.length > 500 ? backendResponseBody.substring(0, 500) + '...' : backendResponseBody;
         console.log(`  Body: ${preview || '(empty)'}`);
       }
       
-      console.log(`\n✅ RESPONSE TO FRONTEND`);
+      console.log(`\n RESPONSE TO FRONTEND`);
       console.log(`  Status: ${proxyRes.statusCode}`);
       console.log(`  Proxy Hostname: ${PROXY_HOSTNAME}`);
       console.log(`  Proxy IP: ${PROXY_IP}`);
@@ -340,7 +301,6 @@ app.use('/api', createProxyMiddleware({
   }
 }));
 
-// Proxy for static files (music files)
 app.use('/static', createProxyMiddleware({
   target: 'http://placeholder',
   changeOrigin: true,
@@ -358,8 +318,7 @@ app.use('/static', createProxyMiddleware({
   onError: (err, req, res) => {
     console.error('[PROXY] Static file error:', err.message);
     
-    // Invalidate leader cache on error to force rediscovery
-    console.warn('⚠️ Invalidating leader cache due to static file error');
+    console.warn('Invalidating leader cache due to static file error');
     cachedLeader = null;
     lastLeaderCheck = 0;
     
@@ -368,7 +327,7 @@ app.use('/static', createProxyMiddleware({
 }));
 
 app.listen(SERVICE_PORT, () => {
-  console.log(`���� Leader Proxy running on port ${SERVICE_PORT}`);
+  console.log(`\n Leader Proxy running on port ${SERVICE_PORT}`);
   console.log(`Configuration:`);
   console.log(`  - CLUSTER_DNS_NAME: ${CLUSTER_DNS_NAME}`);
   console.log(`  - BACKEND_PORT: ${BACKEND_PORT}`);

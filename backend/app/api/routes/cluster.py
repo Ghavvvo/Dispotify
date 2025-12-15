@@ -8,9 +8,7 @@ logger = logging.getLogger(__name__)
 
 @router.get("/status")
 async def get_node_status():
-    """
-    Get current node status, leader info, and cluster membership.
-    """
+    
     try:
         raft_node = get_raft_node()
         
@@ -44,10 +42,7 @@ async def get_node_status():
 
 @router.get("/leader")
 async def get_cluster_leader():
-    """
-    Get the current leader information.
-    Returns the leader's host and port as seen by this node.
-    """
+    
     try:
         raft_node = get_raft_node()
         leader_id = raft_node.get_leader()
@@ -55,7 +50,7 @@ async def get_cluster_leader():
         if not leader_id:
             raise HTTPException(status_code=503, detail="No leader elected yet")
         
-        # If this node is the leader
+        
         if leader_id == raft_node.node_id:
             return {
                 "leaderHost": raft_node.address,
@@ -63,7 +58,7 @@ async def get_cluster_leader():
                 "leaderId": leader_id
             }
         
-        # Find leader in peers
+        
         if leader_id in raft_node.peers:
             leader_node = raft_node.peers[leader_id]
             return {
@@ -72,7 +67,7 @@ async def get_cluster_leader():
                 "leaderId": leader_id
             }
         
-        # Leader ID known but not in peers (shouldn't happen normally)
+        
         raise HTTPException(status_code=503, detail=f"Leader {leader_id} not found in peers")
         
     except HTTPException:
@@ -83,9 +78,7 @@ async def get_cluster_leader():
 
 @router.get("/files")
 async def get_node_files():
-    """
-    List all files stored locally on this node.
-    """
+    
     try:
         from app.core.database import get_db
         from app.models.music import Music
@@ -93,7 +86,7 @@ async def get_node_files():
         replication_manager = get_replication_manager()
         storage_path = replication_manager.storage_path
         
-        # Get physical files
+        
         physical_files = {}
         if storage_path.exists():
             for f in storage_path.iterdir():
@@ -105,7 +98,7 @@ async def get_node_files():
                         "song_name": None
                     }
         
-        # Get metadata from database
+        
         db = next(get_db())
         try:
             songs = db.query(Music).all()
@@ -121,7 +114,7 @@ async def get_node_files():
                     "has_file": filename in physical_files if filename else False
                 })
                 
-                # Add song name to physical file if exists
+                
                 if filename and filename in physical_files:
                     physical_files[filename]["song_name"] = song.nombre
         finally:

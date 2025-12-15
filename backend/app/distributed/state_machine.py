@@ -17,7 +17,7 @@ class StateMachine:
     def _apply_create_music(self, command: dict):
         db = SessionLocal()
         try:
-            # Check if already exists by URL to ensure idempotency
+            
             existing = db.query(Music).filter(Music.url == command["url"]).first()
             if existing:
                 logger.info(f"Music already exists (skipping): {command['url']}")

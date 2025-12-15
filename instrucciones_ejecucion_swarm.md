@@ -1,9 +1,9 @@
-# Instrucciones para Ejecutar Dispotify en Docker Swarm con 2 Hosts usando Docker Run
+
 
 **Fecha:** 12 de diciembre de 2025  
 **Objetivo:** Ejecutar los nodos de Dispotify en un cluster Docker Swarm distribuido en 2 hosts físicos para alta disponibilidad y tolerancia a fallos, usando comandos docker run con restricciones de Swarm.
 
-## Prerrequisitos
+
 - Docker instalado en ambos hosts.
 - Docker Swarm inicializado en el host manager: `docker swarm init --advertise-addr 10.6.121.225`.
 - El segundo host unido al swarm como manager: Obtén el token de manager en el host 1 con `docker swarm join-token manager`, luego en el host 2 ejecuta `docker swarm join --token <MANAGER_TOKEN> <IP_MANAGER>:2377`.
@@ -14,28 +14,28 @@
 - Volúmenes normales de Docker para persistencia.
 - Ejecuta los comandos `docker run` desde la raíz del proyecto Dispotify en cada host (para que `./backend` resuelva correctamente).
 
-## Arquitectura
+
 - **Host 1 (Manager):** Ejecuta servicios de backend-1 y frontend.
 - **Host 2 (Manager):** Ejecuta servicios de backend-2 y backend-3.
 - **Balanceo:** Usa Docker Swarm para distribuir y balancear carga.
 - **Persistencia:** Usa volúmenes normales de Docker.
 
-## Paso 1: Preparar Imágenes
+
 Construye y sube las imágenes a un registry (e.g., Docker Hub):
 ```bash
-# En el host manager
+
 docker build -t herrera/dispotify-backend ./backend
 docker build -t herrera/dispotify-frontend ./frontend
 docker push herrera/dispotify-backend
 docker push herrera/dispotify-frontend
 ```
 
-## Paso 3: Ejecutar Contenedores con Docker Run
+
 
 **IMPORTANTE:** Para desarrollo, monta solo el código fuente (`./backend/app`), NO todo el directorio backend.
 Esto evita que las carpetas de datos (raft_data, music_files, data) se creen en tu PC.
 
-### Backend-1 (en Host 1)
+
 ```bash
 docker run -d \
   --name dispotify-backend-1 \
@@ -51,10 +51,40 @@ docker run -d \
   herrera/dispotify-backend
 ```
 
-### Backend-2 (en Host 2)
 ```bash
 docker run -d \
-  --name dispotify-backend-2 \
+  --name dispotify-backend-11 \
+  --network dispotify-network \
+  --network-alias dispotify-cluster \
+  --publish 8001:8000 \
+  --env NODE_ID=node-11 \
+  --env BOOTSTRAP_SERVICE=dispotify-cluster \
+  --volume raft_data_node11:/app/raft_data \
+  --volume music_files_node11:/app/music_files \
+  --volume db_data_node11:/app/data \
+  --volume ./backend/app:/app/app \
+  herrera/dispotify-backend
+```
+
+
+```bash
+docker run -d \
+  --name dispotify-backend-12 \
+  --network dispotify-network \
+  --network-alias dispotify-cluster \
+  --publish 8002:8000 \
+  --env NODE_ID=node-12 \
+  --env BOOTSTRAP_SERVICE=dispotify-cluster \
+  --volume raft_data_node12:/app/raft_data \
+  --volume music_files_node12:/app/music_files \
+  --volume db_data_node12:/app/data \
+  --volume ./backend/app:/app/app \
+  herrera/dispotify-backend
+  
+```
+
+docker run -d \
+  --name dispotify-backend-12 \
   --network dispotify-network \
   --network-alias dispotify-cluster \
   --publish 8002:8000 \
@@ -65,9 +95,8 @@ docker run -d \
   --volume db_data_node2:/app/data \
   --volume ./backend/app:/app/app \
   herrera/dispotify-backend
-```
 
-### Backend-3 (en Host 2)
+
 ```bash
 docker run -d \
   --name dispotify-backend-13 \
@@ -83,7 +112,7 @@ docker run -d \
   herrera/dispotify-backend
 ```
 
-### Backend-4 (en Host 4)
+
 ```bash
 docker run -d \
   --name dispotify-backend-14 \
@@ -98,7 +127,7 @@ docker run -d \
   --volume ./backend/app:/app/app \
   herrera/dispotify-backend
 ```
-### Backend-5 (en Host 5)
+
 ```bash
 docker run -d \
   --name dispotify-backend-5 \
@@ -114,8 +143,21 @@ docker run -d \
   herrera/dispotify-backend
 ```
 
+docker run -d \
+  --name dispotify-backend-15 \
+  --network dispotify-network \
+  --network-alias dispotify-cluster \
+  --publish 8005:8000 \
+  --env NODE_ID=node-15 \
+  --env BOOTSTRAP_SERVICE=dispotify-cluster \
+  --volume raft_data_node15:/app/raft_data \
+  --volume music_files_node15:/app/music_files \
+  --volume db_data_node15:/app/data \
+  --volume ./backend/app:/app/app \
+  herrera/dispotify-backend
 
-### Frontend con Leader Proxy integrado (en Host 1)
+
+
 El frontend ahora incluye el proxy leader-resolver en el mismo contenedor:
 
 **IMPORTANTE:** Para producción, NO montar volúmenes del código fuente. 
@@ -143,8 +185,10 @@ docker run -d \
 ```bash
 docker build -t herrera/dispotify-frontend ./frontend
 docker stop dispotify-frontend && docker rm dispotify-frontend
-# Luego ejecutar el comando docker run de nuevo
+
 ```
+
+
 
 
 
@@ -175,7 +219,7 @@ docker stop dispotify-frontend && docker rm dispotify-frontend
 
 **Nota:** El frontend apunta al Leader Proxy interno (puerto 3001), que se encarga de redirigir automáticamente todas las peticiones al líder actual del clúster.
 
-## Paso 4: Verificar Despliegue
+
 - **Contenedores:** `docker ps`
 - **Logs:** `docker logs dispotify-backend-1`, `docker logs dispotify-frontend`, etc.
 - **Health Checks:** Desde cualquier host, `curl http://<IP_HOST1>:8001/health`, etc.
@@ -183,19 +227,19 @@ docker stop dispotify-frontend && docker rm dispotify-frontend
 - **Archivos en Nodo:** `curl http://<IP_HOST1>:8001/cluster/files`
 - **Leader Proxy (integrado en frontend):** `curl http://<IP_HOST1>:3001/cluster/leader` (Obtener líder actual del clúster)
 
-## Paso 5: Pruebas
+
 - Sube archivos via POST a `http://<IP_HOST1>:8001/api/v1/music/upload`.
 - Verifica replicación en otros nodos.
 - Simula fallos: Detén un host y verifica que los contenedores se redistribuyan (nota: con docker run, no hay replicación automática; necesitarías scripts para manejar fallos).
 
-## Limpieza
+
 ```bash
 docker rm -f dispotify-backend-1 dispotify-backend-2 dispotify-backend-3 dispotify-frontend
 docker network rm dispotify-network
 docker volume rm raft_data_node1 music_files_node1 raft_data_node2 music_files_node2 raft_data_node3 music_files_node3
 ```
 
-## Notas
+
 - Asegura que los nombres de host (`host1`, `host2`) coincidan con `docker node ls`.
 - Docker run en Swarm no maneja replicas automáticamente; para alta disponibilidad, considera usar docker service o scripts de monitoreo.
 - Monitorea con `docker stats` y logs para tolerancia a fallos.

@@ -42,9 +42,9 @@ async def upload_music(
             if leader_id in raft_node.peers:
                 leader_node = raft_node.peers[leader_id]
             
-            # Fallback if leader is not in peers (should not happen if we know leader_id)
+            
             if not leader_node and leader_id == raft_node.node_id:
-                 # We are the leader? But is_leader() returned False.
+                 
                  pass
 
             if not leader_node:
@@ -201,11 +201,11 @@ async def list_music(
                 f"(commit={read_status['commit_index']}, applied={read_status['last_applied']})"
             )
 
-    # Si hay algún filtro activo, usar búsqueda filtrada
+    
     if q or genero or autor or album:
         return MusicService.search_music(db, q or "", genero, autor, album)
     
-    # Si no hay filtros, retornar todas las canciones
+    
     return MusicService.get_all_music(db, skip, limit)
 
 @router.get("/{music_id}", response_model=MusicResponse)
