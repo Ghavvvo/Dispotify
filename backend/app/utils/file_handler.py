@@ -1,12 +1,13 @@
 from pathlib import Path
 import aiofiles
 import uuid
+import hashlib
 from fastapi import UploadFile, HTTPException
 from app.core.config import settings
 
 class FileHandler:
     @staticmethod
-    async def save_file(file: UploadFile) -> tuple[str, int]:
+    async def save_file(file: UploadFile) -> tuple[str, int, str]:
         if not file.filename:
             raise HTTPException(status_code=400, detail="Filename is required")
 
@@ -25,6 +26,7 @@ class FileHandler:
         file_path = upload_dir / unique_filename
 
         file_size = 0
+        sha256_hash = hashlib.sha256()
         async with aiofiles.open(file_path, 'wb') as f:
             while chunk := await file.read(8192):
                 if file_size + len(chunk) > settings.MAX_FILE_SIZE:
@@ -32,9 +34,10 @@ class FileHandler:
                     file_path.unlink()
                     raise HTTPException(status_code=413, detail="File too large")
                 await f.write(chunk)
+                sha256_hash.update(chunk)
                 file_size += len(chunk)
 
-        return str(file_path), file_size
+        return str(file_path), file_size, sha256_hash.hexdigest()
 
     @staticmethod
     def delete_file(file_path: str):

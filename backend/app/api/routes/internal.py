@@ -233,6 +233,7 @@ async def receive_replicated_file(
                             music_data, 
                             url=metadata_dict["url"], 
                             file_size=result["file_size"],
+                            file_hash=metadata_dict.get("file_hash"),
                             partition_id=metadata_dict.get("partition_id"),
                             epoch_number=metadata_dict.get("epoch_number")
                         )
@@ -446,9 +447,10 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
                         "genero": song_data.get("genero"),
                         "url": url,
                         "file_size": song_data.get("file_size"),
+                        "file_hash": song_data.get("file_hash"),
                         "partition_id": song_data.get("partition_id"),
                         "epoch_number": song_data.get("epoch_number"),
-                        "conflict_flag": False,
+                        "conflict_flag": None,
                         "merge_timestamp": time.time()
                     }
                     songs_to_add.append(command)
@@ -734,9 +736,10 @@ async def handle_bidirectional_partition_merge(merge_request: BidirectionalMerge
                     "genero": song_data.get("genero"),
                     "url": song_data["url"],
                     "file_size": song_data["file_size"],
+                    "file_hash": song_data.get("file_hash"),
                     "partition_id": song_data.get("partition_id"),
                     "epoch_number": song_data.get("epoch_number"),
-                    "conflict_flag": False,
+                    "conflict_flag": None,
                     "merge_timestamp": time.time()
                 }
                 

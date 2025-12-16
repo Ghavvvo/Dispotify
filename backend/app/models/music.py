@@ -12,6 +12,7 @@ class Music(Base):
     genero = Column(String, index=True)
     duracion = Column(Float)
     url = Column(String, nullable=False)
+    file_hash = Column(String, index=True)
     file_size = Column(Integer)
     format = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -20,6 +20,7 @@ class MusicUpdate(BaseModel):
 class MusicResponse(MusicBase):
     id: int
     url: str
+    file_hash: Optional[str] = None
     duracion: Optional[float] = None
     file_size: Optional[int] = None
     format: Optional[str] = None

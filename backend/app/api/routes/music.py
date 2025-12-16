@@ -5,6 +5,7 @@ from typing import List, Optional
 from app.core.database import get_db
 from app.schemas.music import MusicCreate, MusicResponse, MusicUpdate
 from app.services.music_service import MusicService
+from app.models.music import Music
 from app.utils.file_handler import FileHandler
 from app.distributed.communication import get_p2p_client, P2PException
 from pathlib import Path
@@ -93,9 +94,19 @@ async def upload_music(
             detail=f"Formato no soportado. Permitidos: {allowed_extensions}"
         )
 
-    file_path, file_size = await FileHandler.save_file(file)
+    file_path, file_size, file_hash = await FileHandler.save_file(file)
     filename = Path(file_path).name
     url = f"/static/music/{filename}"
+
+    existing_file = db.query(Music).filter(Music.file_hash == file_hash).first()
+    if existing_file:
+        FileHandler.delete_file(file_path)
+        raise HTTPException(status_code=400, detail="Duplicate MP3 file detected")
+
+    existing_song = db.query(Music).filter(Music.nombre == nombre, Music.autor == autor).first()
+    if existing_song:
+        FileHandler.delete_file(file_path)
+        raise HTTPException(status_code=400, detail="Song with same name and author already exists")
 
     try:
         if raft_node:
@@ -107,6 +118,7 @@ async def upload_music(
                 "genero": genero,
                 "url": url,
                 "file_size": file_size,
+                "file_hash": file_hash,
                 "filename": filename,
                 "partition_id": raft_node.partition_id,
                 "epoch_number": raft_node.epoch_number,
@@ -151,10 +163,9 @@ async def upload_music(
                 album=album,
                 genero=genero
             )
-            music = MusicService.create_music(db, music_data, url, file_size)
+            music = MusicService.create_music(db, music_data, url, file_size, file_hash=file_hash)
             return music
 
-        from app.models.music import Music
         music = db.query(Music).filter(Music.url == url).first()
 
         if not music:
@@ -164,7 +175,7 @@ async def upload_music(
                 album=album,
                 genero=genero
             )
-            music = MusicService.create_music(db, music_data, url, file_size)
+            music = MusicService.create_music(db, music_data, url, file_size, file_hash=file_hash)
 
         return music
 
