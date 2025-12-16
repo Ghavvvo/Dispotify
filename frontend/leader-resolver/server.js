@@ -31,7 +31,10 @@ function getProxyIP() {
 
 let cachedLeader = null;
 let lastLeaderCheck = 0;
-
+let cachedClusterNodes = [];
+let lastNodesCheck = 0;
+let lastReadNode = null;
+let lastReadNodeSongs = [];
 
 async function resolveClusterIPs() {
   try {
@@ -59,15 +62,15 @@ async function queryNodeForLeader(ip) {
 
 async function discoverLeader() {
   const ips = await resolveClusterIPs();
-  
+
   if (ips.length === 0) {
     return { error: 'No cluster nodes found', leader: null };
   }
 
   const responses = await Promise.all(ips.map(ip => queryNodeForLeader(ip)));
-  
+
   const votes = {};
-  
+
   for (const response of responses) {
     if (response && response.leaderHost) {
       const leaderKey = `${response.leaderHost}:${response.leaderPort || BACKEND_PORT}`;
@@ -97,14 +100,13 @@ async function discoverLeader() {
 
 async function getCachedLeader() {
   const now = Date.now();
-  
-  // Return cached leader if still valid
+
   if (cachedLeader && (now - lastLeaderCheck) < LEADER_CACHE_TTL) {
     return cachedLeader;
   }
 
   const result = await discoverLeader();
-  
+
   if (!result.leader) {
     throw new Error('No leader available');
   }
@@ -115,17 +117,157 @@ async function getCachedLeader() {
 
   cachedLeader = result.leader;
   lastLeaderCheck = now;
-  
+
   console.log(`Leader resolved: ${cachedLeader.leaderHost}:${cachedLeader.leaderPort}`);
-  
+
   return cachedLeader;
+}
+
+async function getCachedClusterNodes() {
+  const now = Date.now();
+
+  if (cachedClusterNodes.length > 0 && (now - lastNodesCheck) < LEADER_CACHE_TTL) {
+    return cachedClusterNodes;
+  }
+
+  const ips = await resolveClusterIPs();
+
+  if (ips.length === 0) {
+    throw new Error('No cluster nodes available');
+  }
+
+  cachedClusterNodes = ips.map(ip => ({
+    host: ip,
+    port: BACKEND_PORT
+  }));
+  lastNodesCheck = now;
+
+  console.log(`Cluster nodes resolved: ${cachedClusterNodes.length} nodes`);
+
+  return cachedClusterNodes;
+}
+
+function getRandomNode(nodes) {
+  const randomIndex = Math.floor(Math.random() * nodes.length);
+  return nodes[randomIndex];
+}
+
+function isReadOperation(method) {
+  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+}
+
+async function getNodeSongs(node) {
+  const url = `http://${node.host}:${node.port}/api/v1/cluster/files`;
+  try {
+    const response = await axios.get(url, { timeout: REQUEST_TIMEOUT });
+    const songs = response.data.metadata || [];
+    const songIds = songs.map(song => song.id).sort((a, b) => a - b);
+    return songIds;
+  } catch (error) {
+    console.error(`Failed to get songs from node ${node.host}:${node.port}:`, error.message);
+    return null;
+  }
+}
+
+function hasAllSongs(previousSongs, candidateSongs) {
+  if (!candidateSongs) {
+    return false;
+  }
+
+  if (!previousSongs || previousSongs.length === 0) {
+    return true;
+  }
+
+  const candidateSet = new Set(candidateSongs);
+
+  for (const songId of previousSongs) {
+    if (!candidateSet.has(songId)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+async function selectReadNode(nodes) {
+  console.log(`  Available nodes: ${nodes.map(n => `${n.host}:${n.port}`).join(', ')}`);
+  
+  if (!lastReadNode) {
+    const selectedNode = getRandomNode(nodes);
+    const songs = await getNodeSongs(selectedNode);
+
+    if (songs !== null) {
+      lastReadNode = selectedNode;
+      lastReadNodeSongs = songs;
+      console.log(`  Initial read node selected: ${selectedNode.host}:${selectedNode.port} (${songs.length} songs: [${songs.join(', ')}])`);
+    } else {
+      console.log(`  Error getting songs from initial node, using it anyway: ${selectedNode.host}:${selectedNode.port}`);
+    }
+
+    return selectedNode;
+  }
+
+  console.log(`  Last read node: ${lastReadNode.host}:${lastReadNode.port}`);
+
+  const lastNodeStillAvailable = nodes.some(
+    n => n.host === lastReadNode.host && n.port === lastReadNode.port
+  );
+
+  if (!lastNodeStillAvailable) {
+    console.log(`  Last read node ${lastReadNode.host}:${lastReadNode.port} is no longer available`);
+    const selectedNode = getRandomNode(nodes);
+    const songs = await getNodeSongs(selectedNode);
+
+    if (songs !== null) {
+      lastReadNode = selectedNode;
+      lastReadNodeSongs = songs;
+      console.log(`  New read node selected: ${selectedNode.host}:${selectedNode.port} (${songs.length} songs: [${songs.join(', ')}])`);
+    } else {
+      console.log(`  Error getting songs from new node, using it anyway: ${selectedNode.host}:${selectedNode.port}`);
+    }
+
+    return selectedNode;
+  }
+
+  const candidateNode = getRandomNode(nodes);
+  console.log(`  Candidate node: ${candidateNode.host}:${candidateNode.port}`);
+
+  if (candidateNode.host === lastReadNode.host && candidateNode.port === lastReadNode.port) {
+    console.log(`  Randomly selected same node: ${lastReadNode.host}:${lastReadNode.port}`);
+    return lastReadNode;
+  }
+
+  const candidateSongs = await getNodeSongs(candidateNode);
+
+  if (candidateSongs === null) {
+    console.log(`  Error checking candidate node, keeping last node: ${lastReadNode.host}:${lastReadNode.port}`);
+    return lastReadNode;
+  }
+
+  console.log(`  Candidate has ${candidateSongs.length} songs, last node had ${lastReadNodeSongs.length} songs`);
+
+  if (hasAllSongs(lastReadNodeSongs, candidateSongs)) {
+    const newSongs = candidateSongs.filter(id => !lastReadNodeSongs.includes(id));
+    console.log(`  ✓ Switching read node: ${lastReadNode.host}:${lastReadNode.port} (${lastReadNodeSongs.length} songs) → ${candidateNode.host}:${candidateNode.port} (${candidateSongs.length} songs)`);
+    if (newSongs.length > 0) {
+      console.log(`    New songs in candidate: [${newSongs.join(', ')}]`);
+    }
+    lastReadNode = candidateNode;
+    lastReadNodeSongs = candidateSongs;
+    return candidateNode;
+  } else {
+    const missingSongs = lastReadNodeSongs.filter(id => !candidateSongs.includes(id));
+    console.log(`  ✗ Candidate node missing ${missingSongs.length} song(s): [${missingSongs.join(', ')}]`);
+    console.log(`    Keeping last node: ${lastReadNode.host}:${lastReadNode.port} (${lastReadNodeSongs.length} songs)`);
+    return lastReadNode;
+  }
 }
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  
+
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -140,7 +282,7 @@ app.get('/health', (req, res) => {
 app.get('/cluster/leader', async (req, res) => {
   try {
     const result = await discoverLeader();
-    
+
     if (!result.leader) {
       return res.status(503).json({
         error: 'No leader available',
@@ -168,7 +310,7 @@ app.use('/api', express.json());
 app.use('/api', express.urlencoded({ extended: true }));
 
 app.use('/api', createProxyMiddleware({
-  target: 'http://placeholder', // Will be overridden by router
+  target: 'http://placeholder',
   changeOrigin: true,
   pathRewrite: (path, req) => {
     if (!path.endsWith('/') && !path.includes('.') && !path.includes('?') && !path.includes('/upload')) {
@@ -179,29 +321,46 @@ app.use('/api', createProxyMiddleware({
   },
   router: async (req) => {
     try {
-      const leader = await getCachedLeader();
-      const target = `http://${leader.leaderHost}:${leader.leaderPort}`;
+      let target;
+      let targetNode;
       const timestamp = new Date().toISOString();
-      
-      console.log(`\n${'='.repeat(100)}`);
-      console.log(`[${timestamp}] FRONTEND REQUEST`);
+
+      if (isReadOperation(req.method)) {
+        const nodes = await getCachedClusterNodes();
+        targetNode = await selectReadNode(nodes);
+        target = `http://${targetNode.host}:${targetNode.port}`;
+        console.log(`\n${'='.repeat(100)}`);
+        console.log(`[${timestamp}] FRONTEND REQUEST (READ - LOAD BALANCED WITH SYNC CHECK)`);
+      } else {
+        const leader = await getCachedLeader();
+        targetNode = { host: leader.leaderHost, port: leader.leaderPort };
+        target = `http://${targetNode.host}:${targetNode.port}`;
+        console.log(`\n${'='.repeat(100)}`);
+        console.log(`[${timestamp}] FRONTEND REQUEST (WRITE - TO LEADER)`);
+
+        console.log(`  Invalidating read node cache after write operation`);
+        lastReadNode = null;
+        lastReadNodeSongs = [];
+      }
+
       console.log(`  Method: ${req.method}`);
       console.log(`  URL: ${req.url}`);
       console.log(`  Headers: ${JSON.stringify(req.headers, null, 2)}`);
-      
+
       if (req.body && Object.keys(req.body).length > 0) {
         console.log(`  Body: ${JSON.stringify(req.body, null, 2)}`);
       } else {
         console.log(`  Body: (empty)`);
       }
-      
+
       console.log(`\n PROXYING TO BACKEND`);
+      console.log(`  Target Node: ${targetNode.host}:${targetNode.port}`);
       console.log(`  Target URL: ${target}${req.url}`);
       console.log(`  Method: ${req.method}`);
-      
+
       return target;
     } catch (error) {
-      console.error(`[PROXY] ❌ Failed to resolve leader: ${error.message}`);
+      console.error(`[PROXY] ❌ Failed to resolve target: ${error.message}`);
       throw error;
     }
   },
@@ -224,16 +383,19 @@ app.use('/api', createProxyMiddleware({
     console.error(`  URL: ${req.url}`);
     console.error(`  Error: ${err.message}`);
     console.error(`${'!'.repeat(100)}\n`);
-    
-    // Invalidate leader cache on error to force rediscovery
-    console.warn(' Invalidating leader cache due to proxy error');
+
+    console.warn(' Invalidating caches due to proxy error');
     cachedLeader = null;
     lastLeaderCheck = 0;
-    
+    cachedClusterNodes = [];
+    lastNodesCheck = 0;
+    lastReadNode = null;
+    lastReadNodeSongs = [];
+
     if (!res.headersSent) {
       res.status(503).json({
         error: 'Service Unavailable',
-        message: 'Could not proxy request to leader',
+        message: 'Could not proxy request to backend',
         details: err.message
       });
     }
@@ -241,11 +403,11 @@ app.use('/api', createProxyMiddleware({
   onProxyRes: (proxyRes, req, res) => {
     const timestamp = new Date().toISOString();
     const contentLength = proxyRes.headers['content-length'] || '?';
-    
+
     res.setHeader('X-Proxy-Hostname', PROXY_HOSTNAME);
     res.setHeader('X-Proxy-IP', PROXY_IP);
     res.setHeader('X-Proxy-Port', SERVICE_PORT.toString());
-    
+
     if (proxyRes.headers['x-node-id']) {
       res.setHeader('X-Backend-Node-ID', proxyRes.headers['x-node-id']);
     }
@@ -258,7 +420,7 @@ app.use('/api', createProxyMiddleware({
     if (proxyRes.headers['x-node-port']) {
       res.setHeader('X-Backend-Node-Port', proxyRes.headers['x-node-port']);
     }
-    
+
     const existingExposeHeaders = res.getHeader('Access-Control-Expose-Headers') || '';
     const newExposeHeaders = [
       existingExposeHeaders,
@@ -271,12 +433,12 @@ app.use('/api', createProxyMiddleware({
       'X-Backend-Node-Port'
     ].filter(Boolean).join(', ');
     res.setHeader('Access-Control-Expose-Headers', newExposeHeaders);
-    
+
     let backendResponseBody = '';
     proxyRes.on('data', (chunk) => {
       backendResponseBody += chunk.toString('utf8');
     });
-    
+
     proxyRes.on('end', () => {
       console.log(`\n BACKEND RESPONSE`);
       console.log(`  Status: ${proxyRes.statusCode} ${proxyRes.statusMessage}`);
@@ -284,7 +446,7 @@ app.use('/api', createProxyMiddleware({
       console.log(`  Content-Length: ${contentLength} bytes`);
       console.log(`  Backend Node ID: ${proxyRes.headers['x-node-id'] || 'unknown'}`);
       console.log(`  Backend Node Hostname: ${proxyRes.headers['x-node-hostname'] || 'unknown'}`);
-      
+
       try {
         const jsonData = JSON.parse(backendResponseBody);
         console.log(`  Body: ${JSON.stringify(jsonData, null, 2)}`);
@@ -292,7 +454,7 @@ app.use('/api', createProxyMiddleware({
         const preview = backendResponseBody.length > 500 ? backendResponseBody.substring(0, 500) + '...' : backendResponseBody;
         console.log(`  Body: ${preview || '(empty)'}`);
       }
-      
+
       console.log(`\n RESPONSE TO FRONTEND`);
       console.log(`  Status: ${proxyRes.statusCode}`);
       console.log(`  Proxy Hostname: ${PROXY_HOSTNAME}`);
@@ -308,21 +470,26 @@ app.use('/static', createProxyMiddleware({
   changeOrigin: true,
   router: async (req) => {
     try {
-      const leader = await getCachedLeader();
-      const target = `http://${leader.leaderHost}:${leader.leaderPort}`;
-      console.log(`[PROXY] Static file ${req.url} → ${target}`);
+      const nodes = await getCachedClusterNodes();
+      const targetNode = await selectReadNode(nodes);
+      const target = `http://${targetNode.host}:${targetNode.port}`;
+      console.log(`[PROXY] Static file ${req.url} → ${target} (load balanced with sync check)`);
       return target;
     } catch (error) {
-      console.error('[PROXY] Failed to resolve leader for static file:', error.message);
+      console.error('[PROXY] Failed to resolve node for static file:', error.message);
       throw error;
     }
   },
   onError: (err, req, res) => {
     console.error('[PROXY] Static file error:', err.message);
     
-    console.warn('Invalidating leader cache due to static file error');
+    console.warn('Invalidating caches due to static file error');
     cachedLeader = null;
     lastLeaderCheck = 0;
+    cachedClusterNodes = [];
+    lastNodesCheck = 0;
+    lastReadNode = null;
+    lastReadNodeSongs = [];
     
     res.status(503).send('Service Unavailable');
   }
@@ -336,8 +503,15 @@ app.listen(SERVICE_PORT, () => {
   console.log(`  - LEADER_ENDPOINT: ${LEADER_ENDPOINT}`);
   console.log(`  - LEADER_CACHE_TTL: ${LEADER_CACHE_TTL}ms`);
   console.log(`\nProxy endpoints:`);
-  console.log(`  - /api/* → Leader backend`);
-  console.log(`  - /static/* → Leader static files`);
+  console.log(`  - /api/* → Load balanced (READ) or Leader (WRITE)`);
+  console.log(`  - /static/* → Load balanced across cluster nodes`);
   console.log(`  - /health → Proxy health check`);
   console.log(`  - /cluster/leader → Leader info`);
+  console.log(`\nLoad balancing strategy:`);
+  console.log(`  - GET/HEAD/OPTIONS requests → Smart node selection (sync-aware load balancing)`);
+  console.log(`  - POST/PUT/DELETE requests → Leader node only`);
+  console.log(`\nSync verification:`);
+  console.log(`  - New nodes must contain ALL songs from previous node before switching`);
+  console.log(`  - Song lists are compared by ID to ensure data consistency`);
+  console.log(`  - Read node cache invalidated after write operations`);
 });
