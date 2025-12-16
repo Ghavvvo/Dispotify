@@ -38,12 +38,30 @@ export const useServerSongs = () => {
                 hideProgressBar: false,
                 closeOnClick: true,
                 pauseOnHover: true,
-                draggable: true,
+                draggable: true,                    // Ignorar error de parseo
+
             })
             setIsUploadingSong(false)
         }).catch((e) => {
             console.error(e)
-            toast.error("Error al subir la canción", {
+            let errorMessage = "Error al subir la canción";
+
+            if (e instanceof Error) {
+                try {
+                    const errorData = JSON.parse(e.message);
+                    if (errorData.detail) {
+                        errorMessage = errorData.detail;
+                        if (errorMessage === "Duplicate MP3 file detected") {
+                            errorMessage = "El archivo MP3 ya existe.";
+                        } else if (errorMessage === "Song with same name and author already exists") {
+                            errorMessage = "Ya existe una canción con el mismo nombre y autor.";
+                        }
+                    }
+                } catch {
+                }
+            }
+
+            toast.error(errorMessage, {
                 position: "top-right",
                 autoClose: 3000,
                 hideProgressBar: false,
