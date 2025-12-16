@@ -25,7 +25,7 @@ class CommunicationLayer:
         self.client = httpx.AsyncClient(timeout=2.0)
 
     async def send_rpc(self, target_node: NodeInfo, method: str, endpoint: str, data: dict = None):
-        url = f"http:
+        url = f"http://{target_node.address}:{target_node.port}{endpoint}"
         try:
             if method == "POST":
                 response = await self.client.post(url, json=data)
@@ -38,13 +38,10 @@ class CommunicationLayer:
                 return response.json()
             return None
         except Exception as e:
-            
             return None
 
     def discover_nodes(self, service_name: str = "dispotify-cluster") -> List[str]:
-        
         try:
-            
             _, _, ip_list = socket.gethostbyname_ex(service_name)
             return ip_list
         except socket.gaierror:
@@ -59,7 +56,7 @@ class P2PClient:
 
     async def forward_upload(self, node: NodeInfo, endpoint: str, file_content: bytes, filename: str, form_data: dict):
         import httpx
-        url = f"http:
+        url = f"http://{node.address}:{node.port}{endpoint}"
         try:
             files = {'file': (filename, file_content)}
             async with httpx.AsyncClient() as client:

@@ -64,7 +64,7 @@ class ReplicationManager:
                     
                 file_handle = None
                 try:
-                    url = f"http:
+                    url = f"http://{peer.address}:{peer.port}/internal/replicate"
                     
                     file_handle = open(file_path, 'rb')
                     files = {'file': file_handle}

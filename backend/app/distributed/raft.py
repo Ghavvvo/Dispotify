@@ -197,12 +197,12 @@ class RaftNode:
         
         
         total_participating = reachable_count + 1
-        needed = (total_participating 
+        needed = (total_participating // 2) + 1
         
         logger.info(f"Election Term {self.current_term}. Votes: {votes}/{total_participating} (Needed: {needed})")
 
         if votes >= needed:
-            if len(self.peers) > 0 and reachable_count < len(self.peers) 
+            if len(self.peers) > 0 and reachable_count < len(self.peers) // 2:
                  self.state = RaftState.PARTITION_LEADER
             else:
                  self.state = RaftState.LEADER
@@ -225,7 +225,7 @@ class RaftNode:
         n = len(match_indices)
         if n == 0: return
         
-        N = match_indices[n 
+        N = match_indices[n // 2]
         
         if N > self.commit_index and N < len(self.log):
             
@@ -527,7 +527,7 @@ class RaftNode:
         import json
         
         try:
-            url = f"http:
+            url = f"http://{peer.address}:{peer.port}/internal/replicate"
             
             async with httpx.AsyncClient(timeout=30.0) as client:
                 with open(file_path, 'rb') as f:
@@ -614,7 +614,7 @@ class RaftNode:
                     ]
                 }
                 
-                url = f"http:
+                url = f"http://{leader_peer.address}:{leader_peer.port}/internal/partition-merge-bidirectional"
                 
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     logger.info(f"[MERGE] Sending bidirectional merge request to leader {new_leader_id}")
@@ -668,7 +668,7 @@ class RaftNode:
                                 continue
                                 
                             try:
-                                file_url = f"http:
+                                file_url = f"http://{leader_peer.address}:{leader_peer.port}/internal/file/{file_id}"
                                 logger.info(f"[MERGE] Requesting physical file {file_id} from leader")
                                 
                                 file_resp = await client.get(file_url, timeout=60.0)
@@ -774,7 +774,7 @@ class RaftNode:
                  
                  
                  total_reachable = len(self.reachable_peers) + 1
-                 needed = (total_reachable 
+                 needed = (total_reachable // 2) + 1
                  
                  if replication_count >= needed:
                      self.commit_index = last_log_index

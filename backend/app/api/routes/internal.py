@@ -580,7 +580,7 @@ async def _replicate_merge_files_targeted(files_metadata: list, target_node_ids:
                     
                     file_handle = None
                     try:
-                        url = f"http:
+                        url = f"http://{peer.address}:{peer.port}/internal/replicate"
                         
                         file_handle = open(file_path, 'rb')
                         files = {'file': file_handle}

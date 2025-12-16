@@ -2,8 +2,7 @@ import { Music } from "lucide-react";
 import { usePlayer } from "../../../context/PlayerContext.tsx";
 import { useRef, useEffect, useState } from "react";
 
-
-const STATIC_URL = import.meta.env.VITE_STATIC_URL || 'http:
+const STATIC_URL = import.meta.env.VITE_STATIC_URL || 'http://localhost:3001';
 
 export function Footer(){
     const { currentSong } = usePlayer();
@@ -12,12 +11,10 @@ export function Footer(){
     const lastPositionRef = useRef(0);
     const isRetryingRef = useRef(false);
 
-    
     const handleAudioError = (e: React.SyntheticEvent<HTMLAudioElement, Event>) => {
         const audio = audioRef.current;
         if (!audio || !currentSong || isRetryingRef.current) return;
 
-        
         if (retryCount >= 5) {
             console.error('Max retry attempts reached. Playback failed.');
             isRetryingRef.current = false;
@@ -26,24 +23,19 @@ export function Footer(){
 
         console.warn(`Audio playback error detected. Attempting to reconnect to new leader... (attempt ${retryCount + 1}/5)`);
         
-        
         lastPositionRef.current = audio.currentTime || 0;
         isRetryingRef.current = true;
 
-        
         const retryDelay = Math.min(1000 * Math.pow(2, retryCount), 16000);
 
-        
         setTimeout(() => {
             if (audio && currentSong) {
                 console.log(`Retrying playback from position ${lastPositionRef.current}s`);
-                
                 
                 const cacheBuster = `?retry=${Date.now()}`;
                 audio.src = STATIC_URL + currentSong.url + cacheBuster;
                 
                 audio.load();
-                
                 
                 audio.addEventListener('loadedmetadata', () => {
                     audio.currentTime = lastPositionRef.current;
@@ -62,14 +54,12 @@ export function Footer(){
         }, retryDelay);
     };
 
-    
     const handleTimeUpdate = () => {
         if (audioRef.current && !isRetryingRef.current) {
             lastPositionRef.current = audioRef.current.currentTime;
         }
     };
 
-    
     useEffect(() => {
         setRetryCount(0);
         lastPositionRef.current = 0;

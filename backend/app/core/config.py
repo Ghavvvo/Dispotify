@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
 
-    DATABASE_URL: str = f"sqlite:
+    DATABASE_URL: str = f"sqlite:///./data/dispotify_{os.getenv('NODE_ID', 'node-1')}.db"
     NODE_ID: str = os.getenv("NODE_ID", "node-1")
 
     UPLOAD_DIR: str = "./music_files"

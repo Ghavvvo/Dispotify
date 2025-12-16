@@ -1,6 +1,6 @@
 
 
-export const apiUrl = import.meta.env.VITE_API_URL || "http:
+export const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:3001/api/v1/";
 
 const get = (endpoint: string) => 
     fetch(apiUrl + endpoint).then(res => res.json())
