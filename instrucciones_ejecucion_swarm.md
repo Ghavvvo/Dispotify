@@ -166,8 +166,8 @@ docker run -d \
   --network dispotify-network \
   --publish 3000:3000 \
   --publish 3001:3001 \
-  --env VITE_API_URL=http:
-  --env VITE_STATIC_URL=http:
+  --env VITE_API_URL=http://localhost:3001/api/v1/ \
+  --env VITE_STATIC_URL=http://localhost:3001 \
   --env CLUSTER_DNS_NAME=dispotify-cluster \
   --env BACKEND_PORT=8000 \
   --env LEADER_ENDPOINT=/cluster/leader \
