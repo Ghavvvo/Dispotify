@@ -1,6 +1,7 @@
-import { Music } from "lucide-react";
+import { Music, Info } from "lucide-react";
 import { usePlayer } from "../../../context/PlayerContext.tsx";
 import { useRef, useEffect, useState } from "react";
+import { SongDetails } from "../../SongDetails.tsx";
 
 const STATIC_URL = import.meta.env.VITE_STATIC_URL || 'http://localhost:3001';
 
@@ -8,6 +9,7 @@ export function Footer(){
     const { currentSong } = usePlayer();
     const audioRef = useRef<HTMLAudioElement>(null);
     const [retryCount, setRetryCount] = useState(0);
+    const [showDetails, setShowDetails] = useState(false);
     const lastPositionRef = useRef(0);
     const isRetryingRef = useRef(false);
 
@@ -67,48 +69,65 @@ export function Footer(){
     }, [currentSong?.id]);
 
     return (
-        <footer className={'flex bg-black w-full h-40 p-6 justify-between items-center gap-6'}>
-            <div className={'flex items-center h-full'}>
-                {currentSong ? (
-                    <>
-                        <div className={'bg-green-950 h-full rounded-lg p-4 flex items-center justify-center'}>
-                            <Music size={40} className={'text-green-600'}/>
+        <>
+            <footer className={'flex bg-black w-full h-40 p-6 justify-between items-center gap-6'}>
+                <div className={'flex items-center h-full relative'}>
+                    {currentSong ? (
+                        <>
+                            <div className={'bg-green-950 h-full rounded-lg p-4 flex items-center justify-center'}>
+                                <Music size={40} className={'text-green-600'}/>
+                            </div>
+                            <div className={'flex flex-col justify-center ml-5'}>
+                                <h4 className={'text-neutral-100 text-xl font-semibold'}>
+                                    {currentSong.nombre}
+                                </h4>
+                                <p className={'text-neutral-100/60'}>{currentSong.autor}</p>
+                            </div>
+                            <button
+                                onClick={() => setShowDetails(true)}
+                                className={'ml-4 p-2 rounded-full bg-neutral-800 hover:bg-neutral-700 transition-colors'}
+                                title="Ver detalles"
+                            >
+                                <Info size={20} className={'text-white'} />
+                            </button>
+                        </>
+                    ) : (
+                        <div className={'flex items-center'}>
+                            <div className={'bg-neutral-800 h-20 w-20 rounded-lg'}/>
+                            <div className={'flex flex-col justify-center ml-5'}>
+                                <h4 className={'text-neutral-100/40 text-xl'}>
+                                    No hay canción
+                                </h4>
+                                <p className={'text-neutral-100/30'}>Selecciona una canción</p>
+                            </div>
                         </div>
-                        <div className={'flex flex-col justify-center ml-5'}>
-                            <h4 className={'text-neutral-100 text-xl font-semibold'}>
-                                {currentSong.nombre}
-                            </h4>
-                            <p className={'text-neutral-100/60'}>{currentSong.autor}</p>
-                        </div>
-                    </>
-                ) : (
-                    <div className={'flex items-center'}>
-                        <div className={'bg-neutral-800 h-20 w-20 rounded-lg'}/>
-                        <div className={'flex flex-col justify-center ml-5'}>
-                            <h4 className={'text-neutral-100/40 text-xl'}>
-                                No hay canción
-                            </h4>
-                            <p className={'text-neutral-100/30'}>Selecciona una canción</p>
-                        </div>
-                    </div>
-                )}
-            </div>
-            
-            <div className={'flex items-center justify-center w-full'}>
-                {currentSong && (
-                    <audio 
-                        ref={audioRef}
-                        controls 
-                        autoPlay
-                        src={STATIC_URL+currentSong.url}
-                        className={'w-full max-w-2xl'}
-                        onError={handleAudioError}
-                        onTimeUpdate={handleTimeUpdate}
-                    />
-                )}
-            </div>
-            
-            <div className={'w-64'}></div>
-        </footer>
+                    )}
+                </div>
+                
+                <div className={'flex items-center justify-center w-full'}>
+                    {currentSong && (
+                        <audio 
+                            ref={audioRef}
+                            controls 
+                            autoPlay
+                            src={STATIC_URL+currentSong.url}
+                            className={'w-full max-w-2xl'}
+                            onError={handleAudioError}
+                            onTimeUpdate={handleTimeUpdate}
+                        />
+                    )}
+                </div>
+                
+                <div className={'w-64'}></div>
+            </footer>
+
+            {currentSong && (
+                <SongDetails 
+                    song={currentSong}
+                    isOpen={showDetails}
+                    onClose={() => setShowDetails(false)}
+                />
+            )}
+        </>
     )
 }
