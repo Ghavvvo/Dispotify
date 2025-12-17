@@ -106,7 +106,8 @@ async def get_node_files():
                     "song_name": song.nombre,
                     "author": song.autor,
                     "filename": filename,
-                    "has_file": filename in physical_files if filename else False
+                    "has_file": filename in physical_files if filename else False,
+                    "has_conflict" : song.conflict_flag
                 })
 
                 if filename and filename in physical_files:

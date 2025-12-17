@@ -1,4 +1,4 @@
-import { X, Music, User, Disc, Tag, HardDrive, Calendar } from "lucide-react";
+import { X, Music, User, Disc, Tag, HardDrive, Calendar, AlertTriangle } from "lucide-react";
 import type { ISong } from "../types/ISong.ts";
 
 interface SongDetailsProps {
@@ -120,6 +120,17 @@ export function SongDetails({ song, isOpen, onClose }: SongDetailsProps) {
                                 <p className="text-white text-lg">{formatDate(song.updated_at)}</p>
                             </div>
                         </div>
+
+                        {/* Conflicto */}
+                        {song.conflict_flag && (
+                            <div className="flex items-start gap-3 p-4 bg-red-800/50 rounded-lg">
+                                <AlertTriangle className="text-red-500 mt-1 flex-shrink-0" size={20} />
+                                <div className="flex-1">
+                                    <p className="text-neutral-400 text-sm mb-1">Conflicto</p>
+                                    <p className="text-white text-lg">{song.conflict_flag}</p>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>

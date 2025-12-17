@@ -221,6 +221,20 @@ async def receive_replicated_file(
                     existing = db.query(Music).filter(Music.url == metadata_dict["url"]).first()
                     if not existing:
                         logger.info(f"[REPLICATION] Inserting missing metadata for {metadata_dict['url']}")
+                        
+                        conflict_flag = None
+                        dup_meta = db.query(Music).filter(
+                            Music.nombre == metadata_dict["nombre"],
+                            Music.autor == metadata_dict["autor"]
+                        ).first()
+                        if dup_meta:
+                            conflict_flag = "DUPLICATE_METADATA"
+                            
+                        if metadata_dict.get("file_hash"):
+                             dup_hash = db.query(Music).filter(Music.file_hash == metadata_dict.get("file_hash")).first()
+                             if dup_hash:
+                                 conflict_flag = "DUPLICATE_FILE_HASH" if not conflict_flag else f"{conflict_flag};DUPLICATE_FILE_HASH"
+
                         music_data = MusicCreate(
                             nombre=metadata_dict["nombre"],
                             autor=metadata_dict["autor"],
@@ -235,7 +249,8 @@ async def receive_replicated_file(
                             file_size=result["file_size"],
                             file_hash=metadata_dict.get("file_hash"),
                             partition_id=metadata_dict.get("partition_id"),
-                            epoch_number=metadata_dict.get("epoch_number")
+                            epoch_number=metadata_dict.get("epoch_number"),
+                            conflict_flag=conflict_flag
                         )
                     else:
                         logger.info(f"[REPLICATION] Metadata already exists for {metadata_dict['url']}")

@@ -1,4 +1,4 @@
-import {Music, Play, Info} from "lucide-react";
+import {Music, Play, Info, AlertTriangle} from "lucide-react";
 import type { ISong } from "../../../types/ISong.ts";
 import { usePlayer } from "../../../context/PlayerContext.tsx";
 import { useState } from "react";
@@ -51,8 +51,9 @@ export function SongItem(song: SongItemProps) {
                         <Info size={20} className={'text-white'} />
                     </button>
                 </div>
-                <h4 className={`mt-4 text-xl font-semibold ${isCurrentSong ? 'text-green-500' : 'text-neutral-100/80'}`}>
+                <h4 className={`mt-4 text-xl font-semibold flex items-center gap-2 ${isCurrentSong ? 'text-green-500' : song.conflict_flag ? 'text-red-400' : 'text-neutral-100/80'}`}>
                     {song.nombre}
+                    {song.conflict_flag && <AlertTriangle size={16} className="text-red-400" />}
                 </h4>
                 <p className={'text-neutral-100/60'}>{song.autor}</p>
             </article>
