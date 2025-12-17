@@ -127,7 +127,13 @@ export function SongDetails({ song, isOpen, onClose }: SongDetailsProps) {
                                 <AlertTriangle className="text-red-500 mt-1 flex-shrink-0" size={20} />
                                 <div className="flex-1">
                                     <p className="text-neutral-400 text-sm mb-1">Conflicto</p>
-                                    <p className="text-white text-lg">{song.conflict_flag}</p>
+                                    <div className="flex flex-col gap-1">
+                                        {song.conflict_flag.split(';').map((conflict, index) => (
+                                            <p key={index} className="text-white text-lg">
+                                                {conflict.trim()}
+                                            </p>
+                                        ))}
+                                    </div>
                                 </div>
                             </div>
                         )}

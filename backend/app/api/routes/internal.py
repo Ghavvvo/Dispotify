@@ -454,6 +454,19 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
                     })
                     
                     
+                    conflict_flag = None
+                    dup_meta = db.query(Music).filter(
+                        Music.nombre == song_data.get("nombre"),
+                        Music.autor == song_data.get("autor")
+                    ).first()
+                    if dup_meta:
+                        conflict_flag = "DUPLICATE_METADATA"
+                        
+                    if song_data.get("file_hash"):
+                         dup_hash = db.query(Music).filter(Music.file_hash == song_data.get("file_hash")).first()
+                         if dup_hash:
+                             conflict_flag = "DUPLICATE_FILE_HASH" if not conflict_flag else f"{conflict_flag};DUPLICATE_FILE_HASH"
+
                     command = {
                         "type": "create_music",
                         "nombre": song_data.get("nombre"),
@@ -465,7 +478,7 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
                         "file_hash": song_data.get("file_hash"),
                         "partition_id": song_data.get("partition_id"),
                         "epoch_number": song_data.get("epoch_number"),
-                        "conflict_flag": None,
+                        "conflict_flag": conflict_flag,
                         "merge_timestamp": time.time()
                     }
                     songs_to_add.append(command)
@@ -743,6 +756,20 @@ async def handle_bidirectional_partition_merge(merge_request: BidirectionalMerge
             
             logger.info(f"[MERGE_BIDIRECTIONAL] Adding {len(songs_we_need)} songs from their partition via Raft")
             for song_data in songs_we_need:
+                
+                conflict_flag = None
+                dup_meta = db.query(Music).filter(
+                    Music.nombre == song_data["nombre"],
+                    Music.autor == song_data["autor"]
+                ).first()
+                if dup_meta:
+                    conflict_flag = "DUPLICATE_METADATA"
+                    
+                if song_data.get("file_hash"):
+                     dup_hash = db.query(Music).filter(Music.file_hash == song_data.get("file_hash")).first()
+                     if dup_hash:
+                         conflict_flag = "DUPLICATE_FILE_HASH" if not conflict_flag else f"{conflict_flag};DUPLICATE_FILE_HASH"
+
                 command = {
                     "type": "create_music",
                     "nombre": song_data["nombre"],
@@ -754,7 +781,7 @@ async def handle_bidirectional_partition_merge(merge_request: BidirectionalMerge
                     "file_hash": song_data.get("file_hash"),
                     "partition_id": song_data.get("partition_id"),
                     "epoch_number": song_data.get("epoch_number"),
-                    "conflict_flag": None,
+                    "conflict_flag": conflict_flag,
                     "merge_timestamp": time.time()
                 }
                 
