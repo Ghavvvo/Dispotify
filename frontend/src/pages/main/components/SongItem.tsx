@@ -53,7 +53,13 @@ export function SongItem(song: SongItemProps) {
                 </div>
                 <h4 className={`mt-4 text-xl font-semibold flex items-center gap-2 ${isCurrentSong ? 'text-green-500' : song.conflict_flag ? 'text-red-400' : 'text-neutral-100/80'}`}>
                     {song.nombre}
-                    {song.conflict_flag && <AlertTriangle size={16} className="text-red-400" />}
+                    {song.conflict_flag && (
+                        <div className="flex gap-1">
+                            {song.conflict_flag.split(';').map((_, index) => (
+                                <AlertTriangle key={index} size={16} className="text-red-400" />
+                            ))}
+                        </div>
+                    )}
                 </h4>
                 <p className={'text-neutral-100/60'}>{song.autor}</p>
             </article>

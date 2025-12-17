@@ -222,18 +222,50 @@ async def receive_replicated_file(
                     if not existing:
                         logger.info(f"[REPLICATION] Inserting missing metadata for {metadata_dict['url']}")
                         
-                        conflict_flag = None
+                        conflict_flags = []
+                        file_hash = metadata_dict.get("file_hash")
+                        conflicting_songs = []
+                        
                         dup_meta = db.query(Music).filter(
                             Music.nombre == metadata_dict["nombre"],
                             Music.autor == metadata_dict["autor"]
                         ).first()
                         if dup_meta:
-                            conflict_flag = "DUPLICATE_METADATA"
+                            conflict_flags.append("DUPLICATE_METADATA")
+                            conflicting_songs.append(dup_meta)
+                            logger.info(f"[REPLICATION-CONFLICT] Detected DUPLICATE_METADATA for {metadata_dict['nombre']}")
                             
-                        if metadata_dict.get("file_hash"):
-                             dup_hash = db.query(Music).filter(Music.file_hash == metadata_dict.get("file_hash")).first()
-                             if dup_hash:
-                                 conflict_flag = "DUPLICATE_FILE_HASH" if not conflict_flag else f"{conflict_flag};DUPLICATE_FILE_HASH"
+                        if file_hash:
+                            dup_hash = db.query(Music).filter(Music.file_hash == file_hash).first()
+                            if dup_hash:
+                                conflict_flags.append("DUPLICATE_FILE_HASH")
+                                if dup_hash not in conflicting_songs:
+                                    conflicting_songs.append(dup_hash)
+                                logger.info(f"[REPLICATION-CONFLICT] Detected DUPLICATE_FILE_HASH for {metadata_dict['nombre']}")
+
+                        conflict_flag = ";".join(conflict_flags) if conflict_flags else None
+
+                        if conflicting_songs:
+                            for existing_song in conflicting_songs:
+                                existing_conflicts = []
+                                
+                                if file_hash and existing_song.file_hash == file_hash:
+                                    existing_conflicts.append("DUPLICATE_FILE_HASH")
+                                
+                                if existing_song.nombre == metadata_dict["nombre"] and existing_song.autor == metadata_dict["autor"]:
+                                    existing_conflicts.append("DUPLICATE_METADATA")
+                                
+                                new_conflict_flag = ";".join(existing_conflicts)
+                                
+                                if existing_song.conflict_flag:
+                                    existing_flags = set(existing_song.conflict_flag.split(";"))
+                                    new_flags = set(existing_conflicts)
+                                    combined_flags = existing_flags.union(new_flags)
+                                    new_conflict_flag = ";".join(sorted(combined_flags))
+                                
+                                existing_song.conflict_flag = new_conflict_flag
+                                db.commit()
+                                logger.info(f"[REPLICATION-CONFLICT] Marked existing song '{existing_song.nombre}' (ID: {existing_song.id}) with conflicts: {new_conflict_flag}")
 
                         music_data = MusicCreate(
                             nombre=metadata_dict["nombre"],
@@ -252,6 +284,7 @@ async def receive_replicated_file(
                             epoch_number=metadata_dict.get("epoch_number"),
                             conflict_flag=conflict_flag
                         )
+                        logger.info(f"[REPLICATION-CONFLICT] Created new song '{metadata_dict['nombre']}' with conflicts: {conflict_flag}")
                     else:
                         logger.info(f"[REPLICATION] Metadata already exists for {metadata_dict['url']}")
                 finally:
@@ -454,6 +487,19 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
                     })
                     
                     
+                    conflict_flag = None
+                    dup_meta = db.query(Music).filter(
+                        Music.nombre == song_data.get("nombre"),
+                        Music.autor == song_data.get("autor")
+                    ).first()
+                    if dup_meta:
+                        conflict_flag = "DUPLICATE_METADATA"
+                        
+                    if song_data.get("file_hash"):
+                         dup_hash = db.query(Music).filter(Music.file_hash == song_data.get("file_hash")).first()
+                         if dup_hash:
+                             conflict_flag = "DUPLICATE_FILE_HASH" if not conflict_flag else f"{conflict_flag};DUPLICATE_FILE_HASH"
+
                     command = {
                         "type": "create_music",
                         "nombre": song_data.get("nombre"),
@@ -465,7 +511,7 @@ async def handle_partition_merge(merge_request: PartitionMergeRequest):
                         "file_hash": song_data.get("file_hash"),
                         "partition_id": song_data.get("partition_id"),
                         "epoch_number": song_data.get("epoch_number"),
-                        "conflict_flag": None,
+                        "conflict_flag": conflict_flag,
                         "merge_timestamp": time.time()
                     }
                     songs_to_add.append(command)
@@ -743,6 +789,20 @@ async def handle_bidirectional_partition_merge(merge_request: BidirectionalMerge
             
             logger.info(f"[MERGE_BIDIRECTIONAL] Adding {len(songs_we_need)} songs from their partition via Raft")
             for song_data in songs_we_need:
+                
+                conflict_flag = None
+                dup_meta = db.query(Music).filter(
+                    Music.nombre == song_data["nombre"],
+                    Music.autor == song_data["autor"]
+                ).first()
+                if dup_meta:
+                    conflict_flag = "DUPLICATE_METADATA"
+                    
+                if song_data.get("file_hash"):
+                     dup_hash = db.query(Music).filter(Music.file_hash == song_data.get("file_hash")).first()
+                     if dup_hash:
+                         conflict_flag = "DUPLICATE_FILE_HASH" if not conflict_flag else f"{conflict_flag};DUPLICATE_FILE_HASH"
+
                 command = {
                     "type": "create_music",
                     "nombre": song_data["nombre"],
@@ -754,7 +814,7 @@ async def handle_bidirectional_partition_merge(merge_request: BidirectionalMerge
                     "file_hash": song_data.get("file_hash"),
                     "partition_id": song_data.get("partition_id"),
                     "epoch_number": song_data.get("epoch_number"),
-                    "conflict_flag": None,
+                    "conflict_flag": conflict_flag,
                     "merge_timestamp": time.time()
                 }
                 
