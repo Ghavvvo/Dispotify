@@ -19,12 +19,6 @@ async def get_node_status():
         return {
             "node_id": raft_node.node_id,
             "state": raft_node.state.value,
-            "term": raft_node.current_term,
-            "leader_id": raft_node.leader_id,
-            "partition_id": raft_node.partition_id,
-            "commit_index": raft_node.commit_index,
-            "last_applied": raft_node.last_applied,
-            "peers_count": len(raft_node.peers),
             "reachable_peers_count": len(raft_node.reachable_peers),
             "nodes": [
                 {
